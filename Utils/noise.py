@@ -38,7 +38,7 @@ def multiclass_noisify(y, P, random_state=0):
     return new_y
 
 
-def noisify_with_P(y_train, nb_classes, noise, random_state=None):
+def noisify_with_P(y_train, nb_classes, noise, random_state=0):
 
     if noise > 0.0:
         P = build_uniform_P(nb_classes, noise)
@@ -243,6 +243,36 @@ def noisify_mnist_asymmetric(y_train, noise, random_state=None):
 
     return y_train, P, keep_indices
 
+def noisify_covid_asymmetric(y_train, noise, random_state=None):
+    """mistakes for COVID-19 dataset:
+        Covid <-> Viral_pneumonia
+        Lung_opacity <-> Normal
+    """
+    nb_classes = 4
+    P = np.eye(nb_classes)
+    keep_indices = np.arange(len(y_train))
+    n = noise
+
+    if n > 0.0:
+        # Covid <-> Viral_pneumonia (class 0 <-> 3)
+        P[0, 0], P[0, 3] = 1. - n, n
+        P[3, 3], P[3, 0] = 1. - n, n
+
+        # Lung_opacity <-> Normal (class 1 <-> 2)
+        P[1, 1], P[1, 2] = 1. - n, n
+        P[2, 2], P[2, 1] = 1. - n, n
+
+        y_train_noisy = multiclass_noisify(y_train, P=P, random_state=random_state)
+
+        actual_noise = (y_train_noisy != y_train).mean()
+        keep_indices = np.where(y_train_noisy == y_train)[0]
+
+        assert actual_noise > 0.0
+        print('Actual noise %.2f' % actual_noise)
+
+        y_train = y_train_noisy
+
+    return y_train, P, keep_indices
 
 def noisify_binary_asymmetric(y_train, noise, random_state=None):
     """mistakes:

@@ -12,11 +12,12 @@ from network.pointnet import PointNetCls
 from data.cifar_prepare import CIFAR10, CIFAR100
 from data.mnist_prepare import MNIST
 from data.pc_prepare import ModelNet40
+from data.covid_prepare import COVID19
 import torch.optim as optim
 from torch.optim import lr_scheduler
 import torchvision.transforms as transforms
 from Utils.noise import noisify_with_P, noisify_cifar10_asymmetric, \
-    noisify_cifar100_asymmetric, noisify_mnist_asymmetric, noisify_pairflip, noisify_modelnet40_asymmetric
+    noisify_cifar100_asymmetric, noisify_mnist_asymmetric, noisify_pairflip, noisify_modelnet40_asymmetric,noisify_covid_asymmetric
 import numpy as np
 import copy
 from tqdm import tqdm
@@ -142,7 +143,9 @@ def main(args):
     elif arg_dataset == 'pc':
         milestone = [30, 60]
         batch_size = 128
-
+    elif arg_dataset == 'covid':
+        milestone = [30,60]
+        batch_size = 64
     start_epoch = 0
     num_workers = 1
 
@@ -184,6 +187,19 @@ def main(args):
             transforms.ToTensor(),
             transforms.Normalize((0.1307,), (0.3081,)),
         ])
+    elif arg_dataset == 'covid':
+        transform_train = transforms.Compose([
+                transforms.Resize((224,224)), # ???
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(（）,()),
+            ])
+        transform_test = transforms.Compose([
+                transforms.Resize((224,224)),
+                transforms.ToTensor(),
+                transforms.Normalize(（）,()),
+            ])
+
     else:
         transform_train = None
         transform_test = None
@@ -235,7 +251,21 @@ def main(args):
         testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
         num_class = 40
+    elif arg_dataset == 'covid':
+    
+        trainset = COVID19(root='./data', split='train', train_ratio=train_val_ratio, transform=transform_train)
+        trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_workers,worker_init_fn=_init_fn)
+    
+        valset = COVID19(root='./data', split='val', train_ratio=train_val_ratio, transform=transform_test)
+        valloader = torch.utils.data.DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
+        testset = COVID19(root='./data', split='test', transform=transform_test)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+        num_class = 4
+        in_channel = 1
+        
+    
     print('train data size:', len(trainset))
     print('validation data size:', len(valset))
     print('test data size:', len(testset))
@@ -285,6 +315,10 @@ def main(args):
             elif arg_dataset == 'pc':
                 noise_y_train, p, keep_indices = noisify_modelnet40_asymmetric(y_train, noise=noise_level,
                                                                                random_state=random_seed)
+            elif arg_dataset == 'covid':
+                noise_y_train, p, keep_indices = noisify_covid_asymmetric(y_train, noise=noise_level,
+                                                                               random_state=random_seed)
+
             trainset.update_corrupted_label(noise_y_train)
             noise_softlabel = torch.ones(ntrain, num_class) * eps / (num_class - 1)
             noise_softlabel.scatter_(1, torch.tensor(noise_y_train.reshape(-1, 1)), 1 - eps)
@@ -634,7 +668,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', default=0, help='delimited list input of GPUs', type=int)
-    parser.add_argument('--n_gpus', default=0, help="num of GPUS to use", type=int)
+    parser.add_argument('--n_gpus', default=1, help="num of GPUS to use", type=int)
     parser.add_argument("--dataset", default='cifar10', help='choose dataset', type=str)
     parser.add_argument('--network', default='preact_resnet18', help="network architecture", type=str)
     parser.add_argument('--noise_type', default='pairflip', help='noisy type', type=str)
