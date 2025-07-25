@@ -17,7 +17,6 @@ from torch.optim import lr_scheduler
 import torchvision.transforms as transforms
 from Utils.noise import noisify_with_P, noisify_cifar10_asymmetric, \
     noisify_cifar100_asymmetric, noisify_mnist_asymmetric, noisify_pairflip, noisify_modelnet40_asymmetric
-from Utils.RAdam.radam import RAdam
 import numpy as np
 import copy
 from tqdm import tqdm
@@ -265,7 +264,18 @@ def main(args):
             trainset.update_corrupted_softlabel(noise_softlabel)
 
             print("apply uniform noise")
-        else:
+
+        elif noise_type == "pairflip":
+
+            noise_y_train, p, keep_indices = noisify_pairflip(y_train, nb_classes=num_class, noise=noise_level, random_state=random_seed)
+            trainset.update_corrupted_label(noise_y_train)
+            noise_softlabel = torch.ones(ntrain, num_class)*eps/(num_class-1)
+            noise_softlabel.scatter_(1, torch.tensor(noise_y_train.reshape(-1, 1)), 1-eps)
+            trainset.update_corrupted_softlabel(noise_softlabel)
+            
+            print("apply pairflip noise")
+        
+        else :
             if arg_dataset == 'cifar10':
                 noise_y_train, p, keep_indices = noisify_cifar10_asymmetric(y_train, noise=noise_level, random_state=random_seed)
             elif arg_dataset == 'cifar100':
@@ -339,7 +349,7 @@ def main(args):
     if len(opt_gpus) > 1:
         print("Using ", len(opt_gpus), " GPUs")
         os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(x) for x in opt_gpus)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "mps")
     print(device)
 
     if len(opt_gpus) > 1:
@@ -359,7 +369,7 @@ def main(args):
     h = np.zeros([ntrain, num_class])
 
     criterion_1 = nn.NLLLoss()
-    pred_softlabels = np.zeros([ntrain, arg_every_n_epoch, num_class], dtype=np.float)
+    pred_softlabels = np.zeros([ntrain, arg_every_n_epoch, num_class], dtype=float)
 
     train_acc_record = []
     clean_train_acc_record = []
@@ -380,11 +390,8 @@ def main(args):
         clean_train_correct = 0
         noise_train_correct = 0
 
-        optimizer_trust = RAdam(net_trust.parameters(),
-                                     lr=learning_rate(lr, epoch),
-                                     weight_decay=5e-4)
-        #optimizer_trust = optim.SGD(net_trust.parameters(), lr=learning_rate(lr, epoch), weight_decay=5e-4,
-        #                            nesterov=True, momentum=0.9)
+        optimizer_trust = optim.SGD(net_trust.parameters(), lr=learning_rate(lr, epoch), weight_decay=5e-4,
+                                    nesterov=True, momentum=0.9)
 
         net_trust.train()
 
@@ -627,11 +634,11 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', default=0, help='delimited list input of GPUs', type=int)
-    parser.add_argument('--n_gpus', default=1, help="num of GPUS to use", type=int)
-    parser.add_argument("--dataset", default='mnist', help='choose dataset', type=str)
-    parser.add_argument('--network', default='preact_resnet34', help="network architecture", type=str)
-    parser.add_argument('--noise_type', default='uniform', help='noisy type', type=str)
-    parser.add_argument('--noise_level', default=0.8, help='noisy level', type=float)
+    parser.add_argument('--n_gpus', default=0, help="num of GPUS to use", type=int)
+    parser.add_argument("--dataset", default='cifar10', help='choose dataset', type=str)
+    parser.add_argument('--network', default='preact_resnet18', help="network architecture", type=str)
+    parser.add_argument('--noise_type', default='pairflip', help='noisy type', type=str)
+    parser.add_argument('--noise_level', default=0.2, help='noisy level', type=float)
     parser.add_argument('--lr', default=1e-3, help="learning rate", type=float)
     parser.add_argument('--n_epochs', default=180, help="training epoch", type=int)
     parser.add_argument('--epoch_start', default=25, help='epoch start to introduce l_r', type=int)
