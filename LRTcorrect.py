@@ -188,13 +188,13 @@ def main(args):
         ])
     elif arg_dataset == 'covid':
         transform_train = transforms.Compose([
-                transforms.Resize((224,224)), # ???
+#                transforms.Resize((32,32)), 
                 transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
                 transforms.Normalize((0.5094,),(0.2532,)),
             ])
         transform_test = transforms.Compose([
-                transforms.Resize((224,224)),
+ #               transforms.Resize((32,32)),
                 transforms.ToTensor(),
                 transforms.Normalize((0.5094,),(0.2532,)),
             ])
@@ -668,9 +668,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', default=0, help='delimited list input of GPUs', type=int)
     parser.add_argument('--n_gpus', default=1, help="num of GPUS to use", type=int)
-    parser.add_argument("--dataset", default='cifar10', help='choose dataset', type=str)
+    parser.add_argument("--dataset", default='covid', help='choose dataset', type=str)
     parser.add_argument('--network', default='preact_resnet18', help="network architecture", type=str)
-    parser.add_argument('--noise_type', default='pairflip', help='noisy type', type=str)
+    parser.add_argument('--noise_type', default='uniform', help='noisy type', type=str)
     parser.add_argument('--noise_level', default=0.2, help='noisy level', type=float)
     parser.add_argument('--lr', default=1e-3, help="learning rate", type=float)
     parser.add_argument('--n_epochs', default=180, help="training epoch", type=int)

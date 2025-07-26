@@ -74,7 +74,7 @@ class Bottleneck(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes=10, num_input_channels=3):
+    def __init__(self, block, num_blocks, num_classes=10, num_input_channels=1):
         super(ResNet, self).__init__()
         self.in_planes = 64
 
@@ -100,34 +100,31 @@ class ResNet(nn.Module):
         out = self.layer2(out)
         out = self.layer3(out)
         out = self.layer4(out)
-        out = F.avg_pool2d(out, 4)
+        # 自适应池化到1x1
+        out = F.avg_pool2d(out, out.shape[2])
         out = out.view(out.size(0), -1)
         fet = out
         out = self.linear(out)
         return out, fet
 
 
-def preact_resnet18(num_classes=10, num_input_channels=3):
+def preact_resnet18(num_classes=10, num_input_channels=1):
     return ResNet(BasicBlock, [2,2,2,2], num_classes, num_input_channels)
 
 
-def preact_resnet34(num_classes=10,num_input_channels=3):
-    return ResNet(BasicBlock, [3,4,6,3], num_classes,num_input_channels)
+def preact_resnet34(num_classes=10, num_input_channels=1):
+    return ResNet(BasicBlock, [3,4,6,3], num_classes, num_input_channels)
 
 
-def ResNet50(num_classes=10,num_input_channels=3):
-    return ResNet(Bottleneck, [3,4,6,3],num_classes,num_input_channels)
+def ResNet50(num_classes=10, num_input_channels=1):
+    return ResNet(Bottleneck, [3,4,6,3], num_classes, num_input_channels)
 
 
-def preact_resnet101(num_classes=10,num_input_channels=3):
-    return ResNet(Bottleneck, [3,4,23,3],num_classes,num_input_channels)
+def preact_resnet101(num_classes=10, num_input_channels=1):
+    return ResNet(Bottleneck, [3,4,23,3], num_classes, num_input_channels)
 
 
-def ResNet152(num_classes=10,num_input_channels=3):
-    return ResNet(Bottleneck, [3,8,36,3],num_classes,num_input_channels)
+def ResNet152(num_classes=10, num_input_channels=1):
+    return ResNet(Bottleneck, [3,8,36,3], num_classes, num_input_channels)
 
 
-def test():
-    net = ResNet18()
-    y = net(torch.randn(1,3,32,32))
-    print(y.size())
