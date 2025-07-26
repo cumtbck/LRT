@@ -108,7 +108,7 @@ class CIFAR10(data.Dataset):
                 self.targets = self.targets[:train_num]
                 # Add softlabel here
                 self.softlabel = np.ones([train_num, self.num_class], dtype=np.float32)*eps/self.num_class
-                for i in range(train_num):
+                for i in range(remain - train_num):
                     self.softlabel[i, self.targets[i]] = 1 - eps
             elif self.split == 'val':
                 self.data = self.data[train_num:remain]
@@ -119,8 +119,8 @@ class CIFAR10(data.Dataset):
             else:
                 self.data = self.data[remain:]
                 self.targets = self.targets[remain:]
-                self.softlabel = np.ones([(num_data-remain), self.num_class], dtype=np.float32)*eps/self.num_class
-                for i in range(num_data-remain):
+                self.softlabel = np.ones([(num_data-remain), self.num_class],  dtype=np.float32)*eps/self.num_class
+                for i in range(remain - train_num):
                     self.softlabel[i, self.targets[i]] = 1 - eps
         else:
             num_data = len(self.data)

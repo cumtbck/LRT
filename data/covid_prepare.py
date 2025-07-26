@@ -31,7 +31,7 @@ class COVID19(data.Dataset):
 
         self.data = np.array(self.data)
         self.targets = np.array(self.targets)
-
+        self.num_class = len(self.classes)
 
         if self.split != 'test':
             num_data=len(self.data)
@@ -59,7 +59,6 @@ class COVID19(data.Dataset):
                     self.softlabel[i, self.targets[i]] = 1 
         else:
             num_data = len(self.data)
-            self.num_class = len(np.unique(self.targets))
             self.softlabel = np.ones([num_data, self.num_class], dtype=np.int32)
             for i in range(num_data):
                 self.softlabel[i, self.targets[i]] = 1 
