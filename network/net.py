@@ -164,7 +164,7 @@ class CNN9LAYER(nn.Module):
         h = h.view(h.size(0), -1)  # 展平成(batch, 128*9*9)
         logit = self.l_c1(h)
 
-        return logit, h, inter_out
+        return logit, h
 
 
 class LSTMTiny(nn.Module):
