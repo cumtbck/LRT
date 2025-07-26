@@ -1,6 +1,5 @@
 import os
 import sys
-
 import torch.nn as nn
 import torch.nn.parallel
 import random
@@ -192,12 +191,12 @@ def main(args):
                 transforms.Resize((224,224)), # ???
                 transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
-                transforms.Normalize(（）,()),
+                transforms.Normalize((0.5094,),(0.2532,)),
             ])
         transform_test = transforms.Compose([
                 transforms.Resize((224,224)),
                 transforms.ToTensor(),
-                transforms.Normalize(（）,()),
+                transforms.Normalize((0.5094,),(0.2532,)),
             ])
 
     else:
