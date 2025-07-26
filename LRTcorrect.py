@@ -188,13 +188,13 @@ def main(args):
         ])
     elif arg_dataset == 'covid':
         transform_train = transforms.Compose([
-#                transforms.Resize((32,32)), 
+                transforms.Resize((224,224)), 
                 transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
                 transforms.Normalize((0.5094,),(0.2532,)),
             ])
         transform_test = transforms.Compose([
- #               transforms.Resize((32,32)),
+                transforms.Resize((224,224)),
                 transforms.ToTensor(),
                 transforms.Normalize((0.5094,),(0.2532,)),
             ])
@@ -667,16 +667,16 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', default=0, help='delimited list input of GPUs', type=int)
-    parser.add_argument('--n_gpus', default=1, help="num of GPUS to use", type=int)
+    parser.add_argument('--n_gpus', default=0, help="num of GPUS to use", type=int)
     parser.add_argument("--dataset", default='covid', help='choose dataset', type=str)
-    parser.add_argument('--network', default='preact_resnet18', help="network architecture", type=str)
+    parser.add_argument('--network', default='resnet18', help="network architecture", type=str)
     parser.add_argument('--noise_type', default='uniform', help='noisy type', type=str)
     parser.add_argument('--noise_level', default=0.2, help='noisy level', type=float)
     parser.add_argument('--lr', default=1e-3, help="learning rate", type=float)
     parser.add_argument('--n_epochs', default=180, help="training epoch", type=int)
     parser.add_argument('--epoch_start', default=25, help='epoch start to introduce l_r', type=int)
-    parser.add_argument('--epoch_update', default=30, help='epoch start to update labels', type=int)
-    parser.add_argument('--epoch_interval', default=40, help="interval for updating A", type=int)
+    parser.add_argument('--epoch_update', default=20, help='epoch start to update labels', type=int)
+    parser.add_argument('--epoch_interval', default=20, help="interval for updating A", type=int)
     parser.add_argument('--every_n_epoch', default=10, help='rolling window for estimating f(x)_t', type=int)
     parser.add_argument('--two_stage', default=False, help='train NN again with clean data using original cross entropy', type=bool)
     parser.add_argument('--seed', default=123, help='set random seed', type=int)

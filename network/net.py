@@ -5,9 +5,9 @@ from termcolor import cprint
 
 
 class Net(nn.Module):
-    def __init__(self, n_channel=1, n_classes=10):  # 输入通道改为1
+    def __init__(self, n_channel=1, n_classes=10):
         super(Net, self).__init__()
-        # 定义卷积层和池化层
+        # 适配224x224灰度图输入
         self.conv1_1 = nn.Conv2d(n_channel, 32, 3, padding=1)
         self.conv1_2 = nn.Conv2d(32, 64, 3, padding=1)
         self.pool1 = nn.MaxPool2d(2, 2)
@@ -19,10 +19,10 @@ class Net(nn.Module):
         self.bn2_1 = nn.BatchNorm2d(128)
 
         self.conv2_2 = nn.Conv2d(128, 128, 3, padding=1)
-        self.pool2_2 = nn.MaxPool2d(2, 2) #特征数减半
+        self.pool2_2 = nn.MaxPool2d(2, 2)
         self.bn2_2 = nn.BatchNorm2d(128)
-        # 128 * 37 * 37 = 175232
-        self.fc1 = nn.Linear(37 * 37 * 128, 64)  # 修改输入特征数
+        # 224->112->56->28 (3次2x2池化)
+        self.fc1 = nn.Linear(28 * 28 * 128, 64)
         self.fc2 = nn.Linear(64, n_classes)
 
     def forward(self, x):
@@ -31,12 +31,10 @@ class Net(nn.Module):
 
         x2_1 = self.pool2_1(F.relu(self.bn2_1(self.conv2_1(x1_2))))
         x2_2 = self.pool2_2(F.relu(self.bn2_2(self.conv2_2(x2_1))))
-        x = x2_2.view(-1, 37 * 37 * 128)  # 修改展平尺寸
+        x = x2_2.view(-1, 28 * 28 * 128)
 
         x2 = F.relu(self.fc1(x))
-
         x = self.fc2(x2)
-
         return x, x2
 
 
@@ -54,7 +52,7 @@ class Autoencoder(nn.Module):
     def __init__(self):
         super(Autoencoder, self).__init__()
         self.encoder = nn.Sequential(
-            nn.Conv2d(3, 32, 3, stride=2, padding=1),
+            nn.Conv2d(1, 32, 3, stride=2, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(True),
             nn.Conv2d(32, 16, 3, stride=2, padding=1),
@@ -64,8 +62,9 @@ class Autoencoder(nn.Module):
             nn.BatchNorm2d(8),
             nn.ReLU(True)
         )
-        self.fc1 = nn.Linear(128, 64)
-        self.fc2 = nn.Linear(64, 128)
+        # 224->112->56->28->14 (4次stride=2)
+        self.fc1 = nn.Linear(8*14*14, 64)
+        self.fc2 = nn.Linear(64, 8*14*14)
 
         self.decoder = nn.Sequential(
             nn.ConvTranspose2d(8, 16, 3, stride=2, padding=1, output_padding=1),
@@ -74,7 +73,7 @@ class Autoencoder(nn.Module):
             nn.ConvTranspose2d(16, 32, 3, stride=2, padding=1, output_padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(True),
-            nn.ConvTranspose2d(32, 3, 3, stride=2, padding=1, output_padding=1),
+            nn.ConvTranspose2d(32, 1, 3, stride=2, padding=1, output_padding=1),
             nn.Tanh()
         )
 
@@ -82,9 +81,8 @@ class Autoencoder(nn.Module):
         x = self.encoder(x)
         x = x.view(x.size(0), -1)
         latent = self.fc1(x)
-
         x = self.fc2(latent)
-        x = x.view(x.size(0), 8, 4, 4)
+        x = x.view(x.size(0), 8, 14, 14)
         x = self.decoder(x)
         return x, latent
 
@@ -97,7 +95,7 @@ class CNN9LAYER(nn.Module):
     def __init__(self, input_channel=1, n_outputs=10, dropout_rate=0.25):
         self.dropout_rate = dropout_rate
         super(CNN9LAYER, self).__init__()
-        # 输入通道改为1，卷积层参数适配299x299输入
+        # 输入通道改为1，适配224x224输入
         self.c1 = nn.Conv2d(input_channel, 64, kernel_size=3, stride=1, padding=1)
         self.c2 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
         self.c3 = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
@@ -107,8 +105,8 @@ class CNN9LAYER(nn.Module):
         self.c7 = nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1)
         self.c8 = nn.Conv2d(512, 256, kernel_size=3, stride=1, padding=1)
         self.c9 = nn.Conv2d(256, 128, kernel_size=3, stride=1, padding=1)
-        # 经过5次2x2池化后，特征图尺寸为299/32=9（向下取整），即9x9
-        self.l_c1 = nn.Linear(128 * 9 * 9, n_outputs)
+        # 224->112->56->28->14->7 (5次2x2池化)
+        self.l_c1 = nn.Linear(128 * 7 * 7, n_outputs)
         self.bn1 = nn.BatchNorm2d(64)
         self.bn2 = nn.BatchNorm2d(64)
         self.bn3 = nn.BatchNorm2d(128)
@@ -161,9 +159,8 @@ class CNN9LAYER(nn.Module):
         h = F.leaky_relu(call_bn(self.bn9, h), negative_slope=0.01)
         h = F.max_pool2d(h, kernel_size=2, stride=2)  # 18->9
 
-        h = h.view(h.size(0), -1)  # 展平成(batch, 128*9*9)
+        h = h.view(h.size(0), -1)  # 展平成(batch, 128*7*7)
         logit = self.l_c1(h)
-
         return logit, h
 
 
