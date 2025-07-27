@@ -15,6 +15,9 @@ class COVID19(data.Dataset):
         self.split = split
         self.train_ratio = train_ratio
         self.trust_ratio = trust_ratio
+        
+        # 初始化信任掩码
+        self.trust_mask = None
 
         # 适配 data/covid_dataset 目录结构
         dataset_dir = os.path.join(self.root, 'covid_dataset')
@@ -82,6 +85,24 @@ class COVID19(data.Dataset):
 
     def update_corrupted_softlabel(self, noise_label):
         self.softlabel[:] = noise_label[:]
+        
+    def update_trust_mask(self, trust_mask):
+        """
+        更新可信样本掩码
+        
+        Args:
+            trust_mask: 布尔数组，标识哪些样本是可信的（保持真实标签）
+        """
+        self.trust_mask = trust_mask
+
+    def get_trust_mask(self):
+        """
+        获取当前的可信样本掩码
+        
+        Returns:
+            布尔数组，标识哪些样本是可信的
+        """
+        return self.trust_mask
 
     def modify_selected_data(self, modified_data, indices):
         self.data[indices] = modified_data
