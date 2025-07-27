@@ -8,6 +8,7 @@ from network.net import weight_init, CNN9LAYER
 from network.resnet import resnet18, resnet34
 from network.preact_resnet import preact_resnet18, preact_resnet34, preact_resnet101, initialize_weights, conv_init
 from network.pointnet import PointNetCls
+from network.toynet import ToyNet
 from data.cifar_prepare import CIFAR10, CIFAR100
 from data.mnist_prepare import MNIST
 from data.pc_prepare import ModelNet40
@@ -56,7 +57,7 @@ def updateA(s, h, rho=0.9):
 
     return result, A
 
-def lrt_flip_scheme(pred_softlabels_bar, y_tilde, delta):
+def lrt_flip_scheme(pred_softlabels_bar, y_tilde, delta ):
     '''
     The LRT correction scheme.
     pred_softlabels_bar is the prediction of the network which is compared with noisy label y_tilde.
@@ -74,10 +75,14 @@ def lrt_flip_scheme(pred_softlabels_bar, y_tilde, delta):
     ntrain = pred_softlabels_bar.shape[0]
     num_class = pred_softlabels_bar.shape[1]
     for i in range(ntrain):
-        cond_1 = (not pred_softlabels_bar[i].argmax()==y_tilde[i])
-        cond_2 = (pred_softlabels_bar[i].max()/pred_softlabels_bar[i][y_tilde[i]] > delta)
-        if cond_1 and cond_2:
-            y_tilde[i] = pred_softlabels_bar[i].argmax()
+        # 获取最大概率的预测类别
+        m_x = pred_softlabels_bar[i].argmax()
+        # 计算似然比 LR = f_y(x)/f_m_x(x)
+        lr = pred_softlabels_bar[i][y_tilde[i]] / pred_softlabels_bar[i][m_x]
+        # 如果 LR < δ,则翻转标签
+        if lr < delta:
+            y_tilde[i] = m_x
+            
     eps = 1e-2
     clean_softlabels = torch.ones(ntrain, num_class)*eps/(num_class - 1)
     clean_softlabels.scatter_(1, torch.tensor(np.array(y_tilde)).reshape(-1, 1), 1 - eps)
@@ -351,6 +356,10 @@ def main(args):
         net = CNN9LAYER(input_channel=in_channel, n_outputs=num_class)
         net.apply(weight_init)
         feature_size = 128
+    elif which_net == 'toynet':
+        net_trust = ToyNet(in_channels=in_channel, num_classes=num_class)
+        net = ToyNet(in_channels=in_channel, num_classes=num_class)
+        feature_size = 128
     elif which_net == 'resnet18':
         net_trust = resnet18(in_channel=in_channel, num_classes=num_class)
         net = resnet18(in_channel=in_channel, num_classes=num_class)
@@ -392,12 +401,12 @@ def main(args):
     net.to(device)
     # net.apply(conv_init)
 
-    # ------------------------- Initialize Setting ------------------------------
     best_acc = 0
     best_epoch = 0
     patience = 50
     no_improve_counter = 0
-
+    
+    #初始化A
     A = 1/num_class*torch.ones(ntrain, num_class, num_class, requires_grad=False).float().to(device)
     h = np.zeros([ntrain, num_class])
 
@@ -413,7 +422,7 @@ def main(args):
     #noise_ytrain = torch.tensor(noise_ytrain).to(device)
 
     cprint("================  Clean Label...  ================", "yellow")
-    for epoch in range(num_epoch):  # Add some modification here
+    for epoch in range(num_epoch):  
 
         train_correct = 0
         train_loss = 0
@@ -439,7 +448,7 @@ def main(args):
 
             # arg_epoch_start : epoch start to introduce loss retro
             # arg_epoch_interval : epochs between two updating of A
-            if epoch in [arg_epoch_start-1, arg_epoch_start+arg_epoch_interval-1]:
+            if epoch >= arg_epoch_start - 1 and (epoch - (arg_epoch_start - 1)) % arg_epoch_interval == 0:
                 h[indices] = log_outputs.detach().cpu()
             normal_outputs = torch.softmax(outputs, 1)
 
@@ -466,7 +475,7 @@ def main(args):
 
             # For monitoring purpose, comment the following line out if you have your own dataset that doesn't have ground truth label
             train_label_clean = torch.tensor(y_train)[indices].to(device)
-            train_label_noise = torch.tensor(noise_ytrain[indices]).to(device)
+            train_label_noise = torch.tensor(noise_ytrain[indices]).to(device)  # type: ignore
             clean_train_correct += predicted.eq(train_label_clean).sum().item()
             noise_train_correct += predicted.eq(train_label_noise).sum().item() # acc wrt the original noisy labels
 
@@ -477,7 +486,7 @@ def main(args):
               format(epoch, num_epoch, train_acc, clean_train_acc, noise_train_acc))
 
         # updating A
-        if epoch in [arg_epoch_start - 1, arg_epoch_start + 40 - 1]:
+        if epoch >= arg_epoch_start - 1 and (epoch - (arg_epoch_start - 1)) % arg_epoch_interval == 0:
             cprint("+++++++++++++++++ Updating A +++++++++++++++++++", "magenta")
             unsolved = 0
             infeasible = 0
@@ -553,7 +562,6 @@ def main(args):
             cprint('>> final recovery rate: {}\n'.format(recovery_acc),
                    'green')
             saver.write('>> val epoch: {}\n>> current accuracy: {}%\n'.format(epoch, val_acc))
-            saver.write("outputs: {}\n".format(normal_outputs))
             saver.write('>> best accuracy: {}\tbest epoch: {}\n\n'.format(best_acc, best_epoch))
             saver.write(
                 '>> final recovery rate: {}%\n'.format(np.sum(trainset.get_data_labels() == y_train) / ntrain * 100))
@@ -669,9 +677,9 @@ if __name__ == "__main__":
     parser.add_argument('--gpu', default=0, help='delimited list input of GPUs', type=int)
     parser.add_argument('--n_gpus', default=0, help="num of GPUS to use", type=int)
     parser.add_argument("--dataset", default='covid', help='choose dataset', type=str)
-    parser.add_argument('--network', default='resnet18', help="network architecture", type=str)
-    parser.add_argument('--noise_type', default='uniform', help='noisy type', type=str)
-    parser.add_argument('--noise_level', default=0.2, help='noisy level', type=float)
+    parser.add_argument('--network', default='toynet', help="network architecture", type=str)
+    parser.add_argument('--noise_type', default='pairflip', help='noisy type', type=str)
+    parser.add_argument('--noise_level', default=0.6, help='noisy level', type=float)
     parser.add_argument('--lr', default=1e-3, help="learning rate", type=float)
     parser.add_argument('--n_epochs', default=180, help="training epoch", type=int)
     parser.add_argument('--epoch_start', default=25, help='epoch start to introduce l_r', type=int)
