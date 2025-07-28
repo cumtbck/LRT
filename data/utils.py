@@ -3,6 +3,9 @@ import os.path
 import hashlib
 import errno
 from tqdm import tqdm
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 
 def gen_bar_updater(pbar):
@@ -128,3 +131,56 @@ def list_files(root, suffix, prefix=False):
 
     return files
 
+# 定义ANL-CE损失函数
+class ANL_CE_Loss(nn.Module):
+    def __init__(self, alpha=5.0, beta=5.0, delta=5e-5, p_min=1e-7):
+        """
+        ANL-CE损失函数实现
+        参数:
+            alpha: NCE主动损失的权重 (默认5.0)
+            beta: NNCE被动损失的权重 (默认5.0)
+            delta: L1正则化系数 (默认5e-5)
+            p_min: 概率最小值，避免log(0)问题 (默认1e-7)
+        """
+        super(ANL_CE_Loss, self).__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.delta = delta
+        self.A = -torch.log(torch.tensor(p_min))  # 垂直翻转常数
+
+    def forward(self, outputs, features, labels):
+        """
+        计算ANL-CE损失
+        参数:
+            outputs: 模型原始输出 (未归一化logits)
+            features: 模型提取的特征 (用于L1正则化)
+            labels: 真实标签
+        返回:
+            总损失值
+        """
+        # 1. 计算LogSoftmax
+        log_probs = F.log_softmax(outputs, dim=1)
+        
+        # 2. 计算NCE主动损失 (公式3)
+        nce_numerator = -log_probs.gather(1, labels.view(-1, 1))
+        nce_denominator = torch.sum(-log_probs, dim=1, keepdim=True)
+        nce_loss = nce_numerator / nce_denominator
+        
+        # 3. 计算NNCE被动损失 (公式9)
+        log_probs_shifted = log_probs + self.A
+        nn_denominator = torch.sum(log_probs_shifted, dim=1, keepdim=True)
+        nn_numerator = log_probs_shifted.gather(1, labels.view(-1, 1))
+        nn_loss = 1 - nn_numerator / nn_denominator
+        
+        # 4. 组合ANL损失 (公式11)
+        anl_loss = self.alpha * nce_loss + self.beta * nn_loss
+        
+        # 5. 添加L1正则化 (针对特征张量)
+        l1_reg = torch.norm(features, p=1)
+        
+        # 6. 总损失
+        total_loss = anl_loss.mean() + self.delta * l1_reg
+        
+        return total_loss
+
+    

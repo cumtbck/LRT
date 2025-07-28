@@ -13,6 +13,7 @@ from data.cifar_prepare import CIFAR10, CIFAR100
 from data.mnist_prepare import MNIST
 from data.pc_prepare import ModelNet40
 from data.covid_prepare import COVID19
+from data.utils import ANL_CE_Loss
 import torch.optim as optim
 from torch.optim import lr_scheduler
 import torchvision.transforms as transforms
@@ -25,24 +26,6 @@ import pickle as pkl
 from termcolor import cprint
 import datetime
 import math
-
-# 添加鲁棒损失函数
-class GCELoss(nn.Module):
-    """
-    Generalized Cross Entropy Loss
-    对噪声标签更鲁棒的损失函数
-    参考: https://arxiv.org/abs/1805.07836
-    """
-    def __init__(self, q=0.7):
-        super(GCELoss, self).__init__()
-        self.q = q
-        
-    def forward(self, pred, labels):
-        pred = torch.softmax(pred, dim=1)
-        pred_y = pred.gather(1, labels.view(-1, 1)).view(-1)
-        loss = (1 - pred_y.pow(self.q)) / self.q
-        return loss.mean()
-
 
 def check_folder(save_dir):
     if not os.path.exists(save_dir):
@@ -93,14 +76,10 @@ def lrt_flip_scheme(pred_softlabels_bar, y_tilde, delta ):
     ntrain = pred_softlabels_bar.shape[0]
     num_class = pred_softlabels_bar.shape[1]
     for i in range(ntrain):
-        # 获取最大概率的预测类别
-        m_x = pred_softlabels_bar[i].argmax()
-        # 计算似然比 LR = f_y(x)/f_m_x(x)
-        lr = pred_softlabels_bar[i][y_tilde[i]] / pred_softlabels_bar[i][m_x]
-        # 如果 LR < δ,则翻转标签
-        if lr < delta:
-            y_tilde[i] = m_x
-            
+        cond_1 = (not pred_softlabels_bar[i].argmax()==y_tilde[i])
+        cond_2 = (pred_softlabels_bar[i].max()/pred_softlabels_bar[i][y_tilde[i]] > delta)
+        if cond_1 and cond_2:
+            y_tilde[i] = pred_softlabels_bar[i].argmax()
     eps = 1e-2
     clean_softlabels = torch.ones(ntrain, num_class)*eps/(num_class - 1)
     clean_softlabels.scatter_(1, torch.tensor(np.array(y_tilde)).reshape(-1, 1), 1 - eps)
@@ -144,9 +123,7 @@ def main(args):
     train_val_ratio = 0.9
     which_net = arg_which_net                # "cnn" "resnet18" "resnet34" "preact_resnet18" "preact_resnet34" "preact_resnet101" "pc"
     num_epoch = args.n_epochs                # Total training epochs
-    trust_ratio = args.trust_ratio           # 添加可信样本比例参数
-    use_robust_loss = args.use_robust_loss   # 是否使用鲁棒损失函数
-
+    trust_ratio = args.trust_ratio
 
     print('Using {}\nTest on {}\nRandom Seed {}\nevery n epoch {}\nStart at epoch {}'.
           format(arg_which_net, arg_dataset, random_seed, arg_every_n_epoch, arg_epoch_start))
@@ -306,8 +283,8 @@ def main(args):
     noise_y_train = None
     keep_indices = None
     p = None
-    
-    # 为可信样本创建掩码
+
+
     trust_mask = np.zeros(len(y_train), dtype=bool)
     if trust_ratio > 0:
         # 随机选择一部分样本作为可信样本
@@ -315,8 +292,9 @@ def main(args):
         trust_mask[trust_indices] = True
         print(f"使用 {len(trust_indices)} 个可信样本 ({trust_ratio*100:.1f}%)")
     
+
     if(noise_type == 'none'):
-        pass
+            pass
     else:
         if noise_type == "uniform":
             noise_y_train, p, keep_indices = noisify_with_P(y_train, nb_classes=num_class, noise=noise_level, random_state=random_seed)
@@ -370,6 +348,7 @@ def main(args):
             print("apply asymmetric noise")
         print("clean data num:", len(keep_indices))
         print("probability transition matrix:\n{}".format(p))
+
 
     # -- create log file
     file_name = '[' + arg_dataset + '_' + which_net + ']' \
@@ -449,14 +428,7 @@ def main(args):
     A = 1/num_class*torch.ones(ntrain, num_class, num_class, requires_grad=False).float().to(device)
     h = np.zeros([ntrain, num_class])
 
-    # 根据参数选择损失函数
-    if use_robust_loss:
-        criterion_1 = GCELoss(q=0.7)  # q是GCE损失的超参数
-        print("使用鲁棒损失函数: GCE Loss")
-    else:
-        criterion_1 = nn.NLLLoss()
-        print("使用标准损失函数: NLL Loss")
-    
+    criterion_1 = ANL_CE_Loss(alpha=5.0, beta=5.0, delta=5e-5)
     pred_softlabels = np.zeros([ntrain, arg_every_n_epoch, num_class], dtype=float)
 
     train_acc_record = []
@@ -491,20 +463,27 @@ def main(args):
             images, labels, softlabels = images.to(device), labels.to(device), softlabels.to(device)
             outputs, features = net_trust(images)
             log_outputs = torch.log_softmax(outputs, 1).float()
-
             # 获取当前批次中可信样本的掩码
             batch_trust_mask = torch.tensor([trust_mask[idx] for idx in indices]).to(device)
-            
+
             # arg_epoch_start : epoch start to introduce loss retro
             # arg_epoch_interval : epochs between two updating of A
             if epoch >= arg_epoch_start - 1 and (epoch - (arg_epoch_start - 1)) % arg_epoch_interval == 0:
                 h[indices] = log_outputs.detach().cpu()
             normal_outputs = torch.softmax(outputs, 1)
 
+    #        if epoch >= arg_epoch_start: # use loss_retro + loss_ce
+    #            A_batch = A[indices].to(device)
+    #            loss = sum([-A_batch[i].matmul(softlabels[i].reshape(-1, 1).float()).t().matmul(log_outputs[i])
+    #                        for i in range(len(indices))]) / len(indices) + \
+    #                   criterion_1(outputs, features, labels)
+    #        else: # use loss_ce
+    #            loss = criterion_1(outputs, features, labels)
+            
+
             if epoch >= arg_epoch_start: # use loss_retro + loss_ce
-                A_batch = A[indices].to(device)
+                    A_batch = A[indices].to(device)
                 
-                if use_robust_loss:
                     # 对于不可信样本使用loss_retro + GCE损失，对于可信样本使用标准交叉熵
                     unreliable_indices = ~batch_trust_mask
                     reliable_indices = batch_trust_mask
@@ -514,8 +493,8 @@ def main(args):
                     if unreliable_indices.sum() > 0:
                         loss_unreliable = sum([-A_batch[i].matmul(softlabels[i].reshape(-1, 1).float()).t().matmul(log_outputs[i])
                                         for i in range(len(indices)) if not batch_trust_mask[i]]) / max(unreliable_indices.sum().item(), 1) + \
-                                   criterion_1(outputs[unreliable_indices], labels[unreliable_indices])
-                    
+                                   criterion_1(outputs[unreliable_indices], features[unreliable_indices], labels[unreliable_indices])
+
                     loss_reliable = torch.tensor(0.0).to(device)
                     if reliable_indices.sum() > 0:
                         loss_reliable = nn.CrossEntropyLoss()(outputs[reliable_indices], labels[reliable_indices])
@@ -524,21 +503,14 @@ def main(args):
                     weight_reliable = 2.0 * reliable_indices.sum().item() / len(indices)  # 给予可信样本2倍权重
                     weight_unreliable = 1.0 - reliable_indices.sum().item() / len(indices)
                     loss = weight_unreliable * loss_unreliable + weight_reliable * loss_reliable
-                else:
-                    # 原始方法
-                    loss = sum([-A_batch[i].matmul(softlabels[i].reshape(-1, 1).float()).t().matmul(log_outputs[i])
-                                for i in range(len(indices))]) / len(indices) + \
-                           criterion_1(log_outputs, labels)
             else: # use loss_ce
-                if use_robust_loss:
                     # 对于可信样本使用标准交叉熵，不可信样本使用GCE损失
                     unreliable_indices = ~batch_trust_mask
                     reliable_indices = batch_trust_mask
                     
                     loss_unreliable = torch.tensor(0.0).to(device)
                     if unreliable_indices.sum() > 0:
-                        loss_unreliable = criterion_1(outputs[unreliable_indices], labels[unreliable_indices])
-                    
+                        loss_unreliable = criterion_1(outputs[unreliable_indices], features[unreliable_indices], labels[unreliable_indices])
                     loss_reliable = torch.tensor(0.0).to(device)
                     if reliable_indices.sum() > 0:
                         loss_reliable = nn.CrossEntropyLoss()(outputs[reliable_indices], labels[reliable_indices])
@@ -546,9 +518,7 @@ def main(args):
                     weight_reliable = 2.0 * reliable_indices.sum().item() / len(indices)  # 给予可信样本2倍权重
                     weight_unreliable = 1.0 - reliable_indices.sum().item() / len(indices)
                     loss = weight_unreliable * loss_unreliable + weight_reliable * loss_reliable
-                else:
-                    # 原始方法
-                    loss = criterion_1(log_outputs, labels)
+
 
             optimizer_trust.zero_grad()
             loss.backward()
@@ -606,7 +576,7 @@ def main(args):
             pred_softlabels_bar = pred_softlabels.mean(1)
             clean_labels, clean_softlabels = lrt_flip_scheme(pred_softlabels_bar, y_tilde, delta)
             trainset.update_corrupted_softlabel(clean_softlabels)
-            trainset.update_corrupted_label(clean_labels)
+            trainset.update_corrupted_label(clean_softlabels.argmax(1))
 
         # validation
         if not (epoch % 5):
@@ -777,9 +747,8 @@ if __name__ == "__main__":
     parser.add_argument('--epoch_interval', default=10, help="interval for updating A", type=int)
     parser.add_argument('--every_n_epoch', default=10, help='rolling window for estimating f(x)_t', type=int)
     parser.add_argument('--two_stage', default=False, help='train NN again with clean data using original cross entropy', type=bool)
-    parser.add_argument('--seed', default=123, help='set random seed', type=int)
     parser.add_argument('--trust_ratio', default=0.05, help='ratio of trusted samples with clean labels', type=float)
-    parser.add_argument('--use_robust_loss', default=True, help='use robust loss function instead of NLLLoss', type=bool)
+    parser.add_argument('--seed', default=123, help='set random seed', type=int)
     args = parser.parse_args()
 
     opt_gpus = [i for i in range(args.gpu, (args.gpu + args.n_gpus))]
