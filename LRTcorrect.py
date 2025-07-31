@@ -285,22 +285,13 @@ def main(args):
     p = None
 
 
-    trust_mask = np.zeros(len(y_train), dtype=bool)
-    if trust_ratio > 0:
-        # 随机选择一部分样本作为可信样本
-        trust_indices = np.random.choice(len(y_train), int(len(y_train) * trust_ratio), replace=False)
-        trust_mask[trust_indices] = True
-        print(f"使用 {len(trust_indices)} 个可信样本 ({trust_ratio*100:.1f}%)")
-    
+ 
 
     if(noise_type == 'none'):
             pass
     else:
         if noise_type == "uniform":
             noise_y_train, p, keep_indices = noisify_with_P(y_train, nb_classes=num_class, noise=noise_level, random_state=random_seed)
-            # 保留可信样本的真实标签
-            if trust_ratio > 0:
-                noise_y_train[trust_mask] = y_train[trust_mask]
             trainset.update_corrupted_label(noise_y_train)
             noise_softlabel = torch.ones(ntrain, num_class)*eps/(num_class-1)
             noise_softlabel.scatter_(1, torch.tensor(noise_y_train.reshape(-1, 1)), 1-eps)
@@ -311,9 +302,6 @@ def main(args):
 
         elif noise_type == "pairflip":
             noise_y_train, p, keep_indices = noisify_pairflip(y_train, nb_classes=num_class, noise=noise_level, random_state=random_seed)
-            # 保留可信样本的真实标签
-            if trust_ratio > 0:
-                noise_y_train[trust_mask] = y_train[trust_mask]
             trainset.update_corrupted_label(noise_y_train)
             noise_softlabel = torch.ones(ntrain, num_class)*eps/(num_class-1)
             noise_softlabel.scatter_(1, torch.tensor(noise_y_train.reshape(-1, 1)), 1-eps)
@@ -336,9 +324,6 @@ def main(args):
                 noise_y_train, p, keep_indices = noisify_covid_asymmetric(y_train, noise=noise_level,
                                                                          random_state=random_seed)
             
-            # 保留可信样本的真实标签
-            if trust_ratio > 0:
-                noise_y_train[trust_mask] = y_train[trust_mask]
             trainset.update_corrupted_label(noise_y_train)
             noise_softlabel = torch.ones(ntrain, num_class) * eps / (num_class - 1)
             noise_softlabel.scatter_(1, torch.tensor(noise_y_train.reshape(-1, 1)), 1 - eps)
@@ -463,8 +448,6 @@ def main(args):
             images, labels, softlabels = images.to(device), labels.to(device), softlabels.to(device)
             outputs, features = net_trust(images)
             log_outputs = torch.log_softmax(outputs, 1).float()
-            # 获取当前批次中可信样本的掩码
-            batch_trust_mask = torch.tensor([trust_mask[idx] for idx in indices]).to(device)
 
             # arg_epoch_start : epoch start to introduce loss retro
             # arg_epoch_interval : epochs between two updating of A
@@ -472,52 +455,15 @@ def main(args):
                 h[indices] = log_outputs.detach().cpu()
             normal_outputs = torch.softmax(outputs, 1)
 
-    #        if epoch >= arg_epoch_start: # use loss_retro + loss_ce
-    #            A_batch = A[indices].to(device)
-    #            loss = sum([-A_batch[i].matmul(softlabels[i].reshape(-1, 1).float()).t().matmul(log_outputs[i])
-    #                        for i in range(len(indices))]) / len(indices) + \
-    #                   criterion_1(outputs, features, labels)
-    #        else: # use loss_ce
-    #            loss = criterion_1(outputs, features, labels)
+            if epoch >= arg_epoch_start: # use loss_retro + loss_ce
+                A_batch = A[indices].to(device)
+                loss = sum([-A_batch[i].matmul(softlabels[i].reshape(-1, 1).float()).t().matmul(log_outputs[i])
+                            for i in range(len(indices))]) / len(indices) + \
+                       criterion_1(outputs, features, labels)
+            else: # use loss_ce
+                loss = criterion_1(outputs, features, labels)
             
 
-            if epoch >= arg_epoch_start: # use loss_retro + loss_ce
-                    A_batch = A[indices].to(device)
-                
-                    # 对于不可信样本使用loss_retro + GCE损失，对于可信样本使用标准交叉熵
-                    unreliable_indices = ~batch_trust_mask
-                    reliable_indices = batch_trust_mask
-                    
-                    # 分别计算不可信样本和可信样本的损失
-                    loss_unreliable = torch.tensor(0.0).to(device)
-                    if unreliable_indices.sum() > 0:
-                        loss_unreliable = sum([-A_batch[i].matmul(softlabels[i].reshape(-1, 1).float()).t().matmul(log_outputs[i])
-                                        for i in range(len(indices)) if not batch_trust_mask[i]]) / max(unreliable_indices.sum().item(), 1) + \
-                                   criterion_1(outputs[unreliable_indices], features[unreliable_indices], labels[unreliable_indices])
-
-                    loss_reliable = torch.tensor(0.0).to(device)
-                    if reliable_indices.sum() > 0:
-                        loss_reliable = nn.CrossEntropyLoss()(outputs[reliable_indices], labels[reliable_indices])
-                    
-                    # 根据可信/不可信样本数量比例加权合并损失
-                    weight_reliable = 2.0 * reliable_indices.sum().item() / len(indices)  # 给予可信样本2倍权重
-                    weight_unreliable = 1.0 - reliable_indices.sum().item() / len(indices)
-                    loss = weight_unreliable * loss_unreliable + weight_reliable * loss_reliable
-            else: # use loss_ce
-                    # 对于可信样本使用标准交叉熵，不可信样本使用GCE损失
-                    unreliable_indices = ~batch_trust_mask
-                    reliable_indices = batch_trust_mask
-                    
-                    loss_unreliable = torch.tensor(0.0).to(device)
-                    if unreliable_indices.sum() > 0:
-                        loss_unreliable = criterion_1(outputs[unreliable_indices], features[unreliable_indices], labels[unreliable_indices])
-                    loss_reliable = torch.tensor(0.0).to(device)
-                    if reliable_indices.sum() > 0:
-                        loss_reliable = nn.CrossEntropyLoss()(outputs[reliable_indices], labels[reliable_indices])
-                    
-                    weight_reliable = 2.0 * reliable_indices.sum().item() / len(indices)  # 给予可信样本2倍权重
-                    weight_unreliable = 1.0 - reliable_indices.sum().item() / len(indices)
-                    loss = weight_unreliable * loss_unreliable + weight_reliable * loss_reliable
 
 
             optimizer_trust.zero_grad()
