@@ -693,7 +693,6 @@ if __name__ == "__main__":
     parser.add_argument('--epoch_interval', default=10, help="interval for updating A", type=int)
     parser.add_argument('--every_n_epoch', default=10, help='rolling window for estimating f(x)_t', type=int)
     parser.add_argument('--two_stage', default=False, help='train NN again with clean data using original cross entropy', type=bool)
-    parser.add_argument('--trust_ratio', default=0.05, help='ratio of trusted samples with clean labels', type=float)
     parser.add_argument('--seed', default=123, help='set random seed', type=int)
     args = parser.parse_args()
 
