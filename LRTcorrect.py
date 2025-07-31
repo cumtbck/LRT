@@ -120,10 +120,10 @@ def main(args):
     arg_epoch_interval = args.epoch_interval # interval between two update of A
     noise_level = args.noise_level
     noise_type = args.noise_type             # "uniform", "asymmetric", "none"
-    train_val_ratio = 0.9
+    train_val_ratio = 1.0
     which_net = arg_which_net                # "cnn" "resnet18" "resnet34" "preact_resnet18" "preact_resnet34" "preact_resnet101" "pc"
     num_epoch = args.n_epochs                # Total training epochs
-    trust_ratio = args.trust_ratio
+    
 
     print('Using {}\nTest on {}\nRandom Seed {}\nevery n epoch {}\nStart at epoch {}'.
           format(arg_which_net, arg_dataset, random_seed, arg_every_n_epoch, arg_epoch_start))
@@ -257,19 +257,11 @@ def main(args):
         trainset = COVID19(root='./data', split='train', train_ratio=train_val_ratio, transform=transform_train)
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_workers,worker_init_fn=_init_fn)
     
-        valset = COVID19(root='./data', split='val', train_ratio=train_val_ratio, transform=transform_test)
-        valloader = torch.utils.data.DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-
-        testset = COVID19(root='./data', split='test', transform=transform_test)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-
         num_class = 4
         in_channel = 1
         
     
     print('train data size:', len(trainset))
-    print('validation data size:', len(valset))
-    print('test data size:', len(testset))
 
     eps = 1e-6               # This is the epsilon used to soft the label (not the epsilon in the paper)
     ntrain = len(trainset)
@@ -296,7 +288,6 @@ def main(args):
             noise_softlabel = torch.ones(ntrain, num_class)*eps/(num_class-1)
             noise_softlabel.scatter_(1, torch.tensor(noise_y_train.reshape(-1, 1)), 1-eps)
             trainset.update_corrupted_softlabel(noise_softlabel)
-            trainset.update_trust_mask(trust_mask)  # 更新可信样本掩码
             
             print("apply uniform noise")
 
@@ -306,7 +297,6 @@ def main(args):
             noise_softlabel = torch.ones(ntrain, num_class)*eps/(num_class-1)
             noise_softlabel.scatter_(1, torch.tensor(noise_y_train.reshape(-1, 1)), 1-eps)
             trainset.update_corrupted_softlabel(noise_softlabel)
-            trainset.update_trust_mask(trust_mask)  # 更新可信样本掩码
             
             print("apply pairflip noise")
         
@@ -328,8 +318,7 @@ def main(args):
             noise_softlabel = torch.ones(ntrain, num_class) * eps / (num_class - 1)
             noise_softlabel.scatter_(1, torch.tensor(noise_y_train.reshape(-1, 1)), 1 - eps)
             trainset.update_corrupted_softlabel(noise_softlabel)
-            trainset.update_trust_mask(trust_mask)  # 更新可信样本掩码
-
+ 
             print("apply asymmetric noise")
         print("clean data num:", len(keep_indices))
         print("probability transition matrix:\n{}".format(p))
@@ -419,7 +408,6 @@ def main(args):
     train_acc_record = []
     clean_train_acc_record = []
     noise_train_acc_record = []
-    val_acc_record = []
     recovery_record = []
     noise_ytrain = copy.copy(noise_y_train)
     #noise_ytrain = torch.tensor(noise_ytrain).to(device)
@@ -526,151 +514,23 @@ def main(args):
 
         # validation
         if not (epoch % 5):
-            val_total = 0
-            val_correct = 0
             net_trust.eval()
 
-            with torch.no_grad():
-                for i, (images, labels, _, _) in enumerate(valloader):
-                    images, labels = images.to(device), labels.to(device)
-
-                    outputs, _ = net_trust(images)
-
-                    val_total += images.size(0)
-                    _, predicted = outputs.max(1)
-                    val_correct += predicted.eq(labels).sum().item()
-
-            val_acc = val_correct / val_total * 100
-
             train_acc_record.append(train_acc)
-            val_acc_record.append(val_acc)
             clean_train_acc_record.append(clean_train_acc)
             noise_train_acc_record.append(noise_train_acc)
 
             recovery_acc = np.sum(trainset.get_data_labels() == y_train) / ntrain
             recovery_record.append(recovery_acc)
 
-            if val_acc > best_acc:
-                best_acc = val_acc
-                best_epoch = epoch
-                no_improve_counter = 0
-            else:
-                no_improve_counter += 1
-                if no_improve_counter >= patience:
-                    print('>> No improvement for {} epochs. Stop at epoch {}'.format(patience, epoch))
-                    saver.write('>> No improvement for {} epochs. Stop at epoch {}'.format(patience, epoch))
-                    saver.write('>> val epoch: {}\n>> current accuracy: {}%\n'.format(epoch, val_acc))
-                    saver.write('>> best accuracy: {}\tbest epoch: {}\n\n'.format(best_acc, best_epoch))
-                    break
-
-            cprint('val accuracy: {}'.format(val_acc), 'cyan')
             cprint('>> best accuracy: {}\n>> best epoch: {}\n'.format(best_acc, best_epoch), 'green')
             cprint('>> final recovery rate: {}\n'.format(recovery_acc),
                    'green')
-            saver.write('>> val epoch: {}\n>> current accuracy: {}%\n'.format(epoch, val_acc))
             saver.write('>> best accuracy: {}\tbest epoch: {}\n\n'.format(best_acc, best_epoch))
             saver.write(
                 '>> final recovery rate: {}%\n'.format(np.sum(trainset.get_data_labels() == y_train) / ntrain * 100))
             saver.flush()
 
-    # If want to train the neural network again with corrected labels and original loss_ce again
-    # set args.two_stage to True
-    print("Use Two-Stage Model {}".format(args.two_stage))
-    if args.two_stage==True:
-       criterion_2 = nn.NLLLoss()
-       best_acc = 0
-       best_epoch = 0
-       patience = 50
-       no_improve_counter = 0
-
-       cprint("================ Normal Training  ================", "yellow")
-       for epoch in range(num_epoch):  # Add some modification here
-
-           train_correct = 0
-           train_loss = 0
-           train_total = 0
-
-           optimizer_trust = optim.SGD(net.parameters(), momentum=0.9, nesterov=True,
-                                       lr=learning_rate(lr, epoch),
-                                       weight_decay=5e-4)
-
-           net.train()
-
-           for i, (images, labels, softlabels, indices) in enumerate(tqdm(trainloader, ncols=100, ascii=True)):
-               if images.size(0) == 1:  # when batch size equals 1, skip, due to batch normalization
-                   continue
-
-               images, labels, softlabels = images.to(device), labels.to(device), softlabels.to(device)
-               outputs, features = net(images)
-               log_outputs = torch.log_softmax(outputs, 1).float()
-
-               loss = criterion_2(log_outputs, labels)
-
-               optimizer_trust.zero_grad()
-               loss.backward()
-               optimizer_trust.step()
-
-               train_loss += loss.item()
-               train_total += images.size(0)
-               _, predicted = outputs.max(1)
-               train_correct += predicted.eq(labels).sum().item()
-
-           train_acc = train_correct / train_total * 100
-           print(" Train Epoch: [{}/{}] \t Training Accuracy {}%".format(epoch, num_epoch, train_acc))
-
-           if not (epoch % 5):
-
-               val_total = 0
-               val_correct = 0
-               net_trust.eval()
-
-               with torch.no_grad():
-                   for i, (images, labels, _, _) in enumerate(valloader):
-                       images, labels = images.to(device), labels.to(device)
-                       outputs, _ = net(images)
-
-                   val_total += images.size(0)
-                   _, predicted = outputs.max(1)
-                   val_correct += predicted.eq(labels).sum().item()
-
-               val_acc = val_correct / val_total * 100
-
-               if val_acc > best_acc:
-                   best_acc = val_acc
-                   best_epoch = epoch
-                   no_improve_counter = 0
-               else:
-                   no_improve_counter += 1
-                   if no_improve_counter >= patience:
-                       print('>> No improvement for {} epochs. Stop at epoch {}'.format(patience, epoch))
-                       saver.write('>> No improvement for {} epochs. Stop at epoch {}'.format(patience, epoch))
-                       saver.write('>> val epoch: {}\n>> current accuracy: {}%\n'.format(epoch, val_acc))
-                       saver.write('>> best accuracy: {}\tbest epoch: {}\n\n'.format(best_acc, best_epoch))
-                       break
-
-               cprint('val accuracy: {}'.format(val_acc), 'cyan')
-               cprint('>> best accuracy: {}\n>> best epoch: {}\n'.format(best_acc, best_epoch), 'green')
-               cprint('>> final recovery rate: {}\n'.format(np.sum(trainset.get_data_labels() == y_train) / ntrain), 'green')
-
-    cprint("================  Start Testing  ================", "yellow")
-    test_total = 0
-    test_correct = 0
-
-    net_trust.eval()
-    for i, (images, labels, softlabels, indices) in enumerate(testloader):
-        if images.shape[0] == 1:
-            continue
-
-        images, labels = images.to(device), labels.to(device)
-        outputs, _ = net_trust(images)
-
-        test_total += images.shape[0]
-        test_correct += outputs.argmax(1).eq(labels).sum().item()
-
-    test_acc = test_correct/test_total*100
-    print("Final test accuracy {} %".format(test_correct/test_total*100))
-
-    return test_acc
 
 
 if __name__ == "__main__":
@@ -692,12 +552,11 @@ if __name__ == "__main__":
     parser.add_argument('--epoch_update', default=15, help='epoch start to update labels', type=int)
     parser.add_argument('--epoch_interval', default=10, help="interval for updating A", type=int)
     parser.add_argument('--every_n_epoch', default=10, help='rolling window for estimating f(x)_t', type=int)
-    parser.add_argument('--two_stage', default=False, help='train NN again with clean data using original cross entropy', type=bool)
     parser.add_argument('--seed', default=123, help='set random seed', type=int)
     args = parser.parse_args()
 
     opt_gpus = [i for i in range(args.gpu, (args.gpu + args.n_gpus))]
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(x) for x in opt_gpus)
 
-    test_temp = main(args)
+    main(args)
 

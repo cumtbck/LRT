@@ -9,7 +9,7 @@ class COVID19(data.Dataset):
     classes = ['Covid', 'Lung_opacity', 'Normal', 'Viral_pneumonia']
     class_to_idx = {cls: i for i, cls in enumerate(classes)}
 
-    def __init__(self, root, split='train', train_ratio=0.8, trust_ratio=0.1,transform=None):
+    def __init__(self, root, split='train', train_ratio=0.8, trust_ratio=0,transform=None):
         self.root = os.path.expanduser(root)
         self.transform = transform
         self.split = split
@@ -83,7 +83,7 @@ class COVID19(data.Dataset):
 
     def update_corrupted_softlabel(self, noise_label):
         self.softlabel[:] = noise_label[:]
-        
+
     def modify_selected_data(self, modified_data, indices):
         self.data[indices] = modified_data
 
