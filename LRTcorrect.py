@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.parallel
 import random
 import argparse
-from network.net import weight_init, CNN9LAYER
+from network.net import weight_init, CNN9LAYER ,Net
 from network.resnet import resnet18, resnet34
 from network.preact_resnet import preact_resnet18, preact_resnet34, preact_resnet101, initialize_weights, conv_init
 from network.pointnet import PointNetCls
@@ -75,11 +75,16 @@ def lrt_flip_scheme(pred_softlabels_bar, y_tilde, delta ):
     '''
     ntrain = pred_softlabels_bar.shape[0]
     num_class = pred_softlabels_bar.shape[1]
+    
     for i in range(ntrain):
-        cond_1 = (not pred_softlabels_bar[i].argmax()==y_tilde[i])
-        cond_2 = (pred_softlabels_bar[i].max()/pred_softlabels_bar[i][y_tilde[i]] > delta)
-        if cond_1 and cond_2:
-            y_tilde[i] = pred_softlabels_bar[i].argmax()
+        # 获取最大概率的预测类别
+        m_x = pred_softlabels_bar[i].argmax()
+        # 计算似然比 LR = f_y(x)/f_m_x(x)
+        lr = pred_softlabels_bar[i][y_tilde[i]] / pred_softlabels_bar[i][m_x]
+        # 如果 LR < δ,则翻转标签
+        if lr < delta:
+            y_tilde[i] = m_x
+            
     eps = 1e-2
     clean_softlabels = torch.ones(ntrain, num_class)*eps/(num_class - 1)
     clean_softlabels.scatter_(1, torch.tensor(np.array(y_tilde)).reshape(-1, 1), 1 - eps)
@@ -348,6 +353,11 @@ def main(args):
         net = CNN9LAYER(input_channel=in_channel, n_outputs=num_class)
         net.apply(weight_init)
         feature_size = 128
+    elif which_net == 'net':
+        net_trust = Net(n_channel=in_channel, n_classes=num_class)
+        net = Net(n_channel=in_channel, n_classes=num_class)
+        net.apply(weight_init)
+        feature_size = 128
     elif which_net == 'toynet':
         net_trust = ToyNet(in_channels=in_channel, num_classes=num_class)
         net = ToyNet(in_channels=in_channel, num_classes=num_class)
@@ -393,16 +403,13 @@ def main(args):
     net.to(device)
     # net.apply(conv_init)
 
-    best_acc = 0
-    best_epoch = 0
-    patience = 50
-    no_improve_counter = 0
     
     #初始化A
     A = 1/num_class*torch.ones(ntrain, num_class, num_class, requires_grad=False).float().to(device)
     h = np.zeros([ntrain, num_class])
 
     criterion_1 = ANL_CE_Loss(alpha=5.0, beta=5.0, delta=5e-5)
+    criterion_2 = nn.NLLLoss()
     pred_softlabels = np.zeros([ntrain, arg_every_n_epoch, num_class], dtype=float)
 
     train_acc_record = []
@@ -413,6 +420,11 @@ def main(args):
     #noise_ytrain = torch.tensor(noise_ytrain).to(device)
 
     cprint("================  Clean Label...  ================", "yellow")
+    
+    # 添加早停变量
+    perfect_recovery = 0.95
+    recovery_threshold = 3
+    
     for epoch in range(num_epoch):  
 
         train_correct = 0
@@ -447,7 +459,7 @@ def main(args):
                 A_batch = A[indices].to(device)
                 loss = sum([-A_batch[i].matmul(softlabels[i].reshape(-1, 1).float()).t().matmul(log_outputs[i])
                             for i in range(len(indices))]) / len(indices) + \
-                       criterion_1(outputs, features, labels)
+                       criterion_2(log_outputs, labels)
             else: # use loss_ce
                 loss = criterion_1(outputs, features, labels)
             
@@ -523,13 +535,24 @@ def main(args):
             recovery_acc = np.sum(trainset.get_data_labels() == y_train) / ntrain
             recovery_record.append(recovery_acc)
 
-            cprint('>> best accuracy: {}\n>> best epoch: {}\n'.format(best_acc, best_epoch), 'green')
+            # 检查是否达到完美恢复率
+            if recovery_acc >= perfect_recovery:
+                perfect_num += 1
+            else:
+                perfect_num = 0
+
             cprint('>> final recovery rate: {}\n'.format(recovery_acc),
                    'green')
-            saver.write('>> best accuracy: {}\tbest epoch: {}\n\n'.format(best_acc, best_epoch))
             saver.write(
                 '>> final recovery rate: {}%\n'.format(np.sum(trainset.get_data_labels() == y_train) / ntrain * 100))
             saver.flush()
+
+            # 早停检查
+            if perfect_num >= recovery_threshold:
+                cprint(f'>> Early stopping: Perfect recovery rate achieved for {recovery_threshold} consecutive validations', 'red')
+                saver.write(f'>> Early stopping at epoch {epoch}: Perfect recovery rate achieved for {recovery_threshold} consecutive validations\n')
+                saver.flush()
+                break
 
 
 
@@ -545,7 +568,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", default='covid', help='choose dataset', type=str)
     parser.add_argument('--network', default='toynet', help="network architecture", type=str)
     parser.add_argument('--noise_type', default='pairflip', help='noisy type', type=str)
-    parser.add_argument('--noise_level', default=0.6, help='noisy level', type=float)
+    parser.add_argument('--noise_level', default=0.2, help='noisy level', type=float)
     parser.add_argument('--lr', default=1e-3, help="learning rate", type=float)
     parser.add_argument('--n_epochs', default=180, help="training epoch", type=int)
     parser.add_argument('--epoch_start', default=25, help='epoch start to introduce l_r', type=int)
