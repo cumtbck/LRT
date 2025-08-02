@@ -192,5 +192,239 @@ class LSTMTiny(nn.Module):
         return x, feat
 
 
+class RobustLabelCorrector(nn.Module):
+    """
+    针对高噪声（0.8噪声率）设计的鲁棒标签修复模块
+    仿照Net类的输入输出：输入224x224图像，输出预测logits和特征
+    """
+    def __init__(self, n_channel=1, n_classes=10, ensemble_size=3):
+        super(RobustLabelCorrector, self).__init__()
+        self.n_classes = n_classes
+        self.ensemble_size = ensemble_size
+        
+        # 多分支特征提取器 - 提高鲁棒性
+        self.branch1 = self._create_branch(n_channel)
+        self.branch2 = self._create_branch(n_channel)  
+        self.branch3 = self._create_branch(n_channel)
+        
+        # 自注意力机制 - 学习特征重要性
+        self.attention = nn.MultiheadAttention(embed_dim=192, num_heads=8, dropout=0.1)
+        self.attention_norm = nn.LayerNorm(192)
+        
+        # 特征融合层
+        self.feature_fusion = nn.Sequential(
+            nn.Linear(192, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3)
+        )
+        
+        # 多头预测器 - 集成学习
+        self.predictors = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(128, 64),
+                nn.ReLU(inplace=True),
+                nn.Dropout(0.2),
+                nn.Linear(64, n_classes)
+            ) for _ in range(ensemble_size)
+        ])
+        
+        # 不确定性估计器
+        self.uncertainty_estimator = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, 1),
+            nn.Sigmoid()
+        )
+        
+        # 权重融合网络
+        self.weight_net = nn.Sequential(
+            nn.Linear(128, ensemble_size),
+            nn.Softmax(dim=1)
+        )
+        
+        # Dropout层用于Monte Carlo dropout
+        self.mc_dropout = nn.Dropout(0.5)
+        
+        # 初始化权重
+        self.apply(self._init_weights)
+    
+    def _create_branch(self, n_channel):
+        """创建单个特征提取分支"""
+        return nn.Sequential(
+            # 第一层卷积组
+            nn.Conv2d(n_channel, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),  # 224->112
+            nn.Dropout2d(0.1),
+            
+            # 第二层卷积组
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),  # 112->56
+            nn.Dropout2d(0.15),
+            
+            # 第三层卷积组
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2),  # 56->28
+            nn.Dropout2d(0.2),
+            
+            # 全局平均池化
+            nn.AdaptiveAvgPool2d((2, 2)),  # 输出2x2
+            nn.Flatten(),
+            nn.Linear(128 * 4, 64)  # 输出64维特征
+        )
+    
+    def _init_weights(self, m):
+        """权重初始化"""
+        if isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.BatchNorm2d):
+            nn.init.constant_(m.weight, 1)
+            nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Linear):
+            nn.init.kaiming_normal_(m.weight)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, x, training=True, mc_samples=10):
+        batch_size = x.size(0)
+        
+        # 多分支特征提取
+        feat1 = self.branch1(x)  # [B, 64]
+        feat2 = self.branch2(x)  # [B, 64]
+        feat3 = self.branch3(x)  # [B, 64]
+        
+        # 拼接多分支特征
+        multi_feat = torch.cat([feat1, feat2, feat3], dim=1)  # [B, 192]
+        
+        # 自注意力机制
+        # 将特征reshape为序列格式 [seq_len, batch, embed_dim]
+        feat_seq = multi_feat.unsqueeze(0)  # [1, B, 192]
+        attn_feat, _ = self.attention(feat_seq, feat_seq, feat_seq)
+        attn_feat = self.attention_norm(attn_feat.squeeze(0) + multi_feat)
+        
+        # 特征融合
+        fused_feat = self.feature_fusion(attn_feat)  # [B, 128]
+        
+        if training:
+            # 训练时使用集成学习
+            predictions = []
+            for predictor in self.predictors:
+                pred = predictor(fused_feat)
+                predictions.append(pred)
+            
+            # 计算ensemble权重
+            weights = self.weight_net(fused_feat)  # [B, ensemble_size]
+            
+            # 加权融合预测结果
+            ensemble_pred = torch.zeros_like(predictions[0])
+            for i, pred in enumerate(predictions):
+                ensemble_pred += weights[:, i:i+1] * pred
+            
+            # 不确定性估计
+            uncertainty = self.uncertainty_estimator(fused_feat)
+            
+            return ensemble_pred, fused_feat, uncertainty, predictions
+        
+        else:
+            # 测试时使用Monte Carlo Dropout进行不确定性估计
+            predictions = []
+            for _ in range(mc_samples):
+                # 应用MC dropout
+                mc_feat = self.mc_dropout(fused_feat)
+                
+                # 集成预测
+                sample_preds = []
+                for predictor in self.predictors:
+                    pred = predictor(mc_feat)
+                    sample_preds.append(pred)
+                
+                # 计算权重并融合
+                weights = self.weight_net(mc_feat)
+                ensemble_pred = torch.zeros_like(sample_preds[0])
+                for i, pred in enumerate(sample_preds):
+                    ensemble_pred += weights[:, i:i+1] * pred
+                
+                predictions.append(ensemble_pred)
+            
+            # 计算均值和方差
+            predictions = torch.stack(predictions, dim=0)  # [mc_samples, B, n_classes]
+            mean_pred = predictions.mean(dim=0)
+            pred_var = predictions.var(dim=0)
+            uncertainty = pred_var.mean(dim=1, keepdim=True)  # [B, 1]
+            
+            return mean_pred, fused_feat, uncertainty
+    
+    def get_confident_predictions(self, x, confidence_threshold=0.7):
+        """
+        获取高置信度的预测结果，用于标签修复
+        
+        Args:
+            x: 输入图像
+            confidence_threshold: 置信度阈值
+            
+        Returns:
+            confident_preds: 高置信度预测
+            confident_mask: 置信度掩码
+            uncertainties: 不确定性估计
+        """
+        self.eval()
+        with torch.no_grad():
+            result = self.forward(x, training=False)
+            pred, feat, uncertainty = result[:3]  # 只取前3个返回值
+            
+            # 计算预测置信度
+            probs = F.softmax(pred, dim=1)
+            max_probs, _ = probs.max(dim=1)
+            
+            # 结合不确定性和最大概率来确定置信度
+            confidence = max_probs * (1 - uncertainty.squeeze())
+            confident_mask = confidence > confidence_threshold
+            
+            return pred, confident_mask, uncertainty
+    
+    def correct_labels(self, images, noisy_labels, confidence_threshold=0.7):
+        """
+        标签修复函数
+        
+        Args:
+            images: 输入图像
+            noisy_labels: 噪声标签
+            confidence_threshold: 置信度阈值
+            
+        Returns:
+            corrected_labels: 修复后的标签
+            correction_mask: 修复掩码
+        """
+        pred, confident_mask, uncertainty = self.get_confident_predictions(
+            images, confidence_threshold
+        )
+        
+        # 获取预测标签
+        pred_labels = pred.argmax(dim=1)
+        
+        # 只修复高置信度且与原标签不同的样本
+        correction_mask = confident_mask & (pred_labels != noisy_labels)
+        
+        # 创建修复后的标签
+        corrected_labels = noisy_labels.clone()
+        corrected_labels[correction_mask] = pred_labels[correction_mask]
+        
+        return corrected_labels, correction_mask
+
+
 
 
