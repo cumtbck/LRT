@@ -15,6 +15,13 @@ from data.mnist_prepare import MNIST
 from data.pc_prepare import ModelNet40
 from data.covid_prepare import COVID19
 from data.utils import ANL_CE_Loss
+from data.loss import (
+    MAE_Loss, MSE_Loss, CE_Loss, RCE_Loss, NCE_Loss, NNCE_Loss,
+    SCE_Loss, GCE_Loss, FL_Loss, NFL_Loss, NNFL_Loss,
+    AGCE_Loss, AUE_Loss, AExp_Loss,
+    NCE_MAE_Loss, NCE_RCE_Loss, NFL_MAE_Loss, NFL_RCE_Loss,
+    ANL_NCE_Loss, ANL_FL_Loss
+)
 import torch.optim as optim
 from torch.optim import lr_scheduler
 import torchvision.transforms as transforms
@@ -423,6 +430,21 @@ def main(args):
 
     criterion_1 = ANL_CE_Loss(alpha=5.0, beta=5.0, delta=5e-5)
     criterion_2 = nn.NLLLoss()
+    
+    # 添加多个损失函数用于实验对比
+    criterion_3 = MAE_Loss(num_classes=num_class)  # 平均绝对误差
+    criterion_4 = MSE_Loss(num_classes=num_class)  # 均方误差
+    criterion_5 = GCE_Loss(num_classes=num_class, q=0.7)  # 广义交叉熵
+    criterion_6 = SCE_Loss(num_classes=num_class, alpha=0.1, beta=1.0)  # 对称交叉熵
+    criterion_7 = FL_Loss(gamma=2.0, alpha=None)  # Focal损失
+    criterion_8 = NCE_MAE_Loss(num_classes=num_class, alpha=1.0, beta=1.0)  # NCE+MAE组合
+    criterion_9 = NFL_RCE_Loss(num_classes=num_class, alpha=1.0, beta=1.0, gamma=2.0)  # NFL+RCE组合
+    criterion_10 = ANL_NCE_Loss(num_classes=num_class, alpha=5.0, beta=5.0, delta=5e-5)  # 主动负学习NCE
+    
+    # 可以通过修改这里来切换不同的损失函数进行实验
+    # 例如: current_criterion = criterion_3  # 使用MAE损失
+    current_criterion = criterion_1  # 默认使用ANL_CE_Loss
+
     pred_softlabels = np.zeros([ntrain, arg_every_n_epoch, num_class], dtype=float)
 
     train_acc_record = []
@@ -475,7 +497,8 @@ def main(args):
                             for i in range(len(indices))]) / len(indices) + \
                        criterion_2(log_outputs, labels)
             else: # use loss_ce
-                loss = criterion_1(outputs, features, labels)
+                # 使用当前选择的损失函数
+                loss = current_criterion(outputs, features, labels)
             
 
 

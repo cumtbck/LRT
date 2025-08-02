@@ -33,8 +33,8 @@ class RobustNet(nn.Module):
             nn.Linear(512*7*7, 256),
             nn.ReLU(inplace=True),
             nn.Dropout(0.2),
-            nn.Linear(256, 3)
-            # 移除Softmax，在forward中手动应用
+            nn.Linear(256, 3),
+            nn.Softmax(dim=1)
         )
         
         # 噪声感知模块
@@ -138,8 +138,7 @@ class RobustNet(nn.Module):
             head_outputs.append(head(normalized_features))
         
         # 计算自适应权重
-        weight_logits = self.weight_net(normalized_features)
-        weights = F.softmax(weight_logits, dim=1)
+        weights = self.weight_net(normalized_features)
         
         # 加权融合预测结果
         final_output = torch.zeros_like(head_outputs[0])
