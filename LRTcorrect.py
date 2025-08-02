@@ -59,180 +59,37 @@ def updateA(s, h, rho=0.9):
 
     return result, A
 
-def lrt_flip_scheme(pred_softlabels_bar, y_tilde, delta, epoch=0, high_noise_mode=False):
+def lrt_flip_scheme(pred_softlabels_bar, y_tilde, delta ):
     '''
-    改进的LRT标签修复方案，针对高噪声率进行优化
-    
-    主要改进：
-    1. 动态阈值调整 - 根据训练进度调整delta
-    2. 置信度加权 - 考虑预测的置信度
-    3. 渐进式修复 - 逐步增加修复力度
-    4. 多数投票机制 - 对不确定样本使用邻域信息
-    
-    Input:
-    pred_softlabels_bar: rolling average of output after softlayers for past 10 epochs
+    The LRT correction scheme.
+    pred_softlabels_bar is the prediction of the network which is compared with noisy label y_tilde.
+    If the LR is smaller than the given threshhold delta, we reject LRT and flip y_tilde to prediction of pred_softlabels_bar
+
+    Input
+    pred_softlabels_bar: rolling average of output after softlayers for past 10 epochs. Could use other rolling windows.
     y_tilde: noisy labels at current epoch
-    delta: base LRT threshold
-    epoch: current training epoch
-    high_noise_mode: whether to use high noise adaptations
-    
-    Output:
-    y_tilde: corrected labels
-    clean_softlabels: soft version of corrected labels
+    delta: LRT threshholding
+
+    Output
+    y_tilde : new noisy labels after cleanning
+    clean_softlabels : softversion of y_tilde
     '''
     ntrain = pred_softlabels_bar.shape[0]
     num_class = pred_softlabels_bar.shape[1]
-    
-    # 针对高噪声的动态阈值策略
-    if high_noise_mode:
-        # 高噪声模式下使用更保守的策略
-        dynamic_delta = delta * (1.0 + 0.1 * np.tanh((epoch - 30) / 20.0))
-        confidence_threshold = 0.7  # 更高的置信度要求
-    else:
-        dynamic_delta = delta
-        confidence_threshold = 0.5
-    
-    # 计算每个样本的预测置信度
-    max_probs = np.max(pred_softlabels_bar, axis=1)
-    
-    # 记录修复统计
-    flipped_count = 0
-    high_confidence_flips = 0
-    
-    corrected_labels = y_tilde.copy()
     
     for i in range(ntrain):
         # 获取最大概率的预测类别
         m_x = pred_softlabels_bar[i].argmax()
-        current_label = y_tilde[i]
-        
         # 计算似然比 LR = f_y(x)/f_m_x(x)
-        lr = pred_softlabels_bar[i][current_label] / (pred_softlabels_bar[i][m_x] + 1e-8)
-        
-        # 获取预测置信度
-        prediction_confidence = max_probs[i]
-        
-        # 多重判断条件
-        should_flip = False
-        
-        # 条件1: 基本LRT测试
-        if lr < dynamic_delta:
-            should_flip = True
-        
-        # 条件2: 高置信度预测且与当前标签不符
-        if prediction_confidence > confidence_threshold and m_x != current_label:
-            # 额外的置信度加权LRT测试
-            confidence_weighted_threshold = dynamic_delta * (2.0 - prediction_confidence)
-            if lr < confidence_weighted_threshold:
-                should_flip = True
-                if prediction_confidence > 0.8:
-                    high_confidence_flips += 1
-        
-        # 条件3: 对于高噪声，使用更严格的判断
-        if high_noise_mode and prediction_confidence > 0.85:
-            # 非常高置信度的预测，即使LRT测试不通过也考虑翻转
-            entropy = -np.sum(pred_softlabels_bar[i] * np.log(pred_softlabels_bar[i] + 1e-8))
-            low_entropy_threshold = np.log(num_class) * 0.3  # 低熵阈值
-            if entropy < low_entropy_threshold and m_x != current_label:
-                should_flip = True
-        
-        # 执行标签翻转
-        if should_flip:
-            corrected_labels[i] = m_x
-            flipped_count += 1
-    
-    # 生成软标签
+        lr = pred_softlabels_bar[i][y_tilde[i]] / pred_softlabels_bar[i][m_x]
+        # 如果 LR < δ,则翻转标签
+        if lr < delta:
+            y_tilde[i] = m_x
+            
     eps = 1e-2
-    clean_softlabels = torch.ones(ntrain, num_class) * eps / (num_class - 1)
-    clean_softlabels.scatter_(1, torch.tensor(np.array(corrected_labels)).reshape(-1, 1), 1 - eps)
-    
-    # 打印统计信息
-    if flipped_count > 0:
-        print(f"LRT修复统计: 翻转 {flipped_count}/{ntrain} 个标签 "
-              f"({flipped_count/ntrain*100:.1f}%), "
-              f"高置信度翻转: {high_confidence_flips}")
-    
-    return corrected_labels, clean_softlabels
-
-
-def adaptive_lrt_flip_scheme(pred_softlabels_bar, y_tilde, delta, epoch=0, 
-                           noise_level=0.0, validation_acc=0.0):
-    '''
-    自适应LRT标签修复方案 - 根据训练状态动态调整策略
-    
-    Args:
-        pred_softlabels_bar: 预测概率的滑动平均
-        y_tilde: 当前噪声标签
-        delta: 基础LRT阈值
-        epoch: 当前训练轮次
-        noise_level: 噪声水平
-        validation_acc: 验证准确率
-    '''
-    ntrain = pred_softlabels_bar.shape[0]
-    num_class = pred_softlabels_bar.shape[1]
-    
-    # 根据噪声水平调整策略激进程度
-    if noise_level >= 0.6:  # 高噪声
-        aggression_factor = 1.5
-        confidence_req = 0.8
-    elif noise_level >= 0.4:  # 中等噪声
-        aggression_factor = 1.2
-        confidence_req = 0.7
-    else:  # 低噪声
-        aggression_factor = 1.0
-        confidence_req = 0.6
-    
-    # 根据训练进度调整
-    progress_factor = min(1.0, epoch / 50.0)
-    dynamic_delta = delta * (1.0 + aggression_factor * progress_factor)
-    
-    # 根据验证准确率调整 - 如果模型表现好，更相信其预测
-    if validation_acc > 0.7:
-        confidence_bonus = 0.1
-    else:
-        confidence_bonus = 0.0
-    
-    corrected_labels = y_tilde.copy()
-    flip_count = 0
-    
-    for i in range(ntrain):
-        m_x = pred_softlabels_bar[i].argmax()
-        current_label = y_tilde[i]
-        
-        if m_x == current_label:
-            continue  # 预测与标签一致，无需修复
-        
-        # 计算修正的似然比
-        lr = pred_softlabels_bar[i][current_label] / (pred_softlabels_bar[i][m_x] + 1e-8)
-        prediction_conf = pred_softlabels_bar[i][m_x]
-        
-        # 多层判断
-        flip_decision = False
-        
-        # Layer 1: 基础LRT测试
-        if lr < dynamic_delta:
-            flip_decision = True
-        
-        # Layer 2: 置信度测试
-        if prediction_conf > (confidence_req + confidence_bonus):
-            flip_decision = True
-        
-        # Layer 3: 对于极高噪声的特殊处理
-        if noise_level >= 0.8:
-            # 使用更严格的条件
-            if prediction_conf > 0.9 and lr < (dynamic_delta * 2.0):
-                flip_decision = True
-        
-        if flip_decision:
-            corrected_labels[i] = m_x
-            flip_count += 1
-    
-    # 生成软标签
-    eps = 1e-2
-    clean_softlabels = torch.ones(ntrain, num_class) * eps / (num_class - 1)
-    clean_softlabels.scatter_(1, torch.tensor(np.array(corrected_labels)).reshape(-1, 1), 1 - eps)
-    
-    return corrected_labels, clean_softlabels
+    clean_softlabels = torch.ones(ntrain, num_class)*eps/(num_class - 1)
+    clean_softlabels.scatter_(1, torch.tensor(np.array(y_tilde)).reshape(-1, 1), 1 - eps)
+    return y_tilde, clean_softlabels
 
 
 def learning_rate(init, epoch):
@@ -677,18 +534,7 @@ def main(args):
         if epoch >= arg_epoch_update:
             y_tilde = trainset.get_data_labels()
             pred_softlabels_bar = pred_softlabels.mean(1)
-            
-            # 判断是否为高噪声模式
-            high_noise_mode = noise_level >= 0.6
-            
-            # 使用改进的自适应LRT方案
-            clean_labels, clean_softlabels = adaptive_lrt_flip_scheme(
-                pred_softlabels_bar, y_tilde, delta, 
-                epoch=epoch, 
-                noise_level=noise_level,
-                validation_acc=clean_train_acc/100.0  # 使用训练准确率作为参考
-            )
-            
+            clean_labels, clean_softlabels = lrt_flip_scheme(pred_softlabels_bar, y_tilde, delta)
             trainset.update_corrupted_softlabel(clean_softlabels)
             trainset.update_corrupted_label(clean_softlabels.argmax(1))
 
