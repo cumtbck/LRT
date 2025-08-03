@@ -9,11 +9,20 @@ from network.resnet import resnet18, resnet34
 from network.preact_resnet import preact_resnet18, preact_resnet34, preact_resnet101, initialize_weights, conv_init
 from network.pointnet import PointNetCls
 from network.toynet import ToyNet
+from network.net import Net
+from network.robust_net import RobustNet, MixupRobustNet, EnsembleRobustNet
 from data.cifar_prepare import CIFAR10, CIFAR100
 from data.mnist_prepare import MNIST
 from data.pc_prepare import ModelNet40
 from data.covid_prepare import COVID19
 from data.utils import ANL_CE_Loss
+from data.loss import (
+    MAE_Loss, MSE_Loss, CE_Loss, RCE_Loss, NCE_Loss, NNCE_Loss,
+    SCE_Loss, GCE_Loss, FL_Loss, NFL_Loss, NNFL_Loss,
+    AGCE_Loss, AUE_Loss, AExp_Loss,
+    NCE_MAE_Loss, NCE_RCE_Loss, NFL_MAE_Loss, NFL_RCE_Loss,
+    ANL_NCE_Loss, ANL_FL_Loss
+)
 import torch.optim as optim
 from torch.optim import lr_scheduler
 import torchvision.transforms as transforms
@@ -101,7 +110,7 @@ def learning_rate(init, epoch):
 
 def main(args):
 
-    random_seed = int(np.random.choice(range(1000), 1))
+    random_seed = args.seed
     np.random.seed(random_seed)
     random.seed(random_seed)
     torch.manual_seed(random_seed)
@@ -123,28 +132,13 @@ def main(args):
     train_val_ratio = 1.0
     which_net = arg_which_net                # "cnn" "resnet18" "resnet34" "preact_resnet18" "preact_resnet34" "preact_resnet101" "pc"
     num_epoch = args.n_epochs                # Total training epochs
-    
+    trust_ratio = args.trust_ratio
 
     print('Using {}\nTest on {}\nRandom Seed {}\nevery n epoch {}\nStart at epoch {}'.
           format(arg_which_net, arg_dataset, random_seed, arg_every_n_epoch, arg_epoch_start))
 
     # -- training parameters
-    if arg_dataset == 'mnist':
-        milestone = [30, 60]
-        batch_size = 64
-        in_channels = 1
-    elif arg_dataset == 'cifar10':
-        milestone = [60, 180]
-        batch_size = 128
-        in_channels = 1
-    elif arg_dataset == 'cifar100':
-        milestone = [60, 180]
-        batch_size = 128
-        in_channels = 1
-    elif arg_dataset == 'pc':
-        milestone = [30, 60]
-        batch_size = 128
-    elif arg_dataset == 'covid':
+    if arg_dataset == 'covid':
         milestone = [30,60]
         batch_size = 64
     start_epoch = 0
@@ -154,41 +148,7 @@ def main(args):
 
     # -- specify dataset
     # data augmentation
-    if arg_dataset == 'cifar10':
-        transform_train = transforms.Compose([
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-        ])
-
-        transform_test = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-        ])
-    elif arg_dataset == 'cifar100':
-        transform_train = transforms.Compose([
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize((0.507, 0.487, 0.441), (0.507, 0.487, 0.441)),
-        ])
-
-        transform_test = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.507, 0.487, 0.441), (0.507, 0.487, 0.441)),
-        ])
-    elif arg_dataset == 'mnist':
-        transform_train = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,)),
-        ])
-
-        transform_test = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,)),
-        ])
-    elif arg_dataset == 'covid':
+    if arg_dataset == 'covid':
         transform_train = transforms.Compose([
                 transforms.Resize((224,224)), 
                 transforms.RandomHorizontalFlip(),
@@ -205,63 +165,18 @@ def main(args):
         transform_train = None
         transform_test = None
 
-    if arg_dataset == 'cifar10':
-        trainset = CIFAR10(root='./data', split='train', train_ratio=train_val_ratio, trust_ratio=0, download=True, transform=transform_train)
-        trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_workers, worker_init_fn=_init_fn)
-        valset = CIFAR10(root='./data', split='val', train_ratio=train_val_ratio, trust_ratio=0, download=True, transform=transform_test)
-        valloader = torch.utils.data.DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-
-        testset = CIFAR10(root='./data', split='test', download=True, transform=transform_test)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-
-        images_size = [3, 32, 32]
-        num_class = 10
-        in_channel = 3
-
-    elif arg_dataset == 'cifar100':
-        trainset = CIFAR100(root='./data', split='train', train_ratio=train_val_ratio, trust_ratio=0, download=True, transform=transform_train)
-        trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_workers,worker_init_fn=_init_fn)
-        valset = CIFAR100(root='./data', split='val', train_ratio=train_val_ratio, trust_ratio=0, download=True, transform=transform_test)
-        valloader = torch.utils.data.DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-
-        testset = CIFAR100(root='./data', split='test', download=True, transform=transform_test)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-
-        num_class = 100
-        in_channel = 3
-
-    elif arg_dataset == 'mnist':
-        trainset = MNIST(root='./data', split='train', train_ratio=train_val_ratio, download=True, transform=transform_train)
-        trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_workers,worker_init_fn=_init_fn)
-        valset = MNIST(root='./data', split='val', train_ratio=train_val_ratio, download=True, transform=transform_test)
-        valloader = torch.utils.data.DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-
-        testset = MNIST(root='./data', split='test', download=True, transform=transform_test)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-
-        num_class = 10
-        in_channel = 1
-
-    elif arg_dataset == 'pc':
-        trainset = ModelNet40(split='train', train_ratio=train_val_ratio, num_ptrs=1024, random_jitter=True)
-        trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_workers, worker_init_fn=_init_fn, drop_last=True)
-        valset = ModelNet40(split='val', train_ratio=train_val_ratio, num_ptrs=1024)
-        valloader = torch.utils.data.DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-
-        testset = ModelNet40(split='test', num_ptrs=1024)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-
-        num_class = 40
-    elif arg_dataset == 'covid':
+    if arg_dataset == 'covid':
     
         trainset = COVID19(root='./data', split='train', train_ratio=train_val_ratio, transform=transform_train)
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_workers,worker_init_fn=_init_fn)
     
         num_class = 4
         in_channel = 1
-        
-    
+    else :
+        raise ValueError('Invalid dataset!')
+
     print('train data size:', len(trainset))
+
 
     eps = 1e-6               # This is the epsilon used to soft the label (not the epsilon in the paper)
     ntrain = len(trainset)
@@ -275,7 +190,14 @@ def main(args):
     noise_y_train = None
     keep_indices = None
     p = None
-
+       
+    # 为可信样本创建掩码
+    trust_mask = np.zeros(len(y_train), dtype=bool)
+    if trust_ratio > 0:
+        # 随机选择一部分样本作为可信样本
+        trust_indices = np.random.choice(len(y_train), int(len(y_train) * trust_ratio), replace=False)
+        trust_mask[trust_indices] = True
+        print(f"使用 {len(trust_indices)} 个可信样本 ({trust_ratio*100:.1f}%)")
 
  
 
@@ -284,41 +206,46 @@ def main(args):
     else:
         if noise_type == "uniform":
             noise_y_train, p, keep_indices = noisify_with_P(y_train, nb_classes=num_class, noise=noise_level, random_state=random_seed)
+            # 保留可信样本的真实标签
+            if trust_ratio > 0:
+                noise_y_train[trust_mask] = y_train[trust_mask]
             trainset.update_corrupted_label(noise_y_train)
             noise_softlabel = torch.ones(ntrain, num_class)*eps/(num_class-1)
             noise_softlabel.scatter_(1, torch.tensor(noise_y_train.reshape(-1, 1)), 1-eps)
             trainset.update_corrupted_softlabel(noise_softlabel)
+            trainset.update_trust_mask(trust_mask)  # 更新可信样本掩码
             
             print("apply uniform noise")
 
         elif noise_type == "pairflip":
             noise_y_train, p, keep_indices = noisify_pairflip(y_train, nb_classes=num_class, noise=noise_level, random_state=random_seed)
+            # 保留可信样本的真实标签
+            if trust_ratio > 0:
+                noise_y_train[trust_mask] = y_train[trust_mask]
             trainset.update_corrupted_label(noise_y_train)
             noise_softlabel = torch.ones(ntrain, num_class)*eps/(num_class-1)
             noise_softlabel.scatter_(1, torch.tensor(noise_y_train.reshape(-1, 1)), 1-eps)
             trainset.update_corrupted_softlabel(noise_softlabel)
+            trainset.update_trust_mask(trust_mask)  # 更新可信样本掩码
             
             print("apply pairflip noise")
         
         else:
-            if arg_dataset == 'cifar10':
-                noise_y_train, p, keep_indices = noisify_cifar10_asymmetric(y_train, noise=noise_level, random_state=random_seed)
-            elif arg_dataset == 'cifar100':
-                noise_y_train, p, keep_indices = noisify_cifar100_asymmetric(y_train, noise=noise_level, random_state=random_seed)
-            elif arg_dataset == 'mnist':
-                noise_y_train, p, keep_indices = noisify_mnist_asymmetric(y_train, noise=noise_level, random_state=random_seed)
-            elif arg_dataset == 'pc':
-                noise_y_train, p, keep_indices = noisify_modelnet40_asymmetric(y_train, noise=noise_level,
-                                                                              random_state=random_seed)
-            elif arg_dataset == 'covid':
+            if arg_dataset == 'covid':
                 noise_y_train, p, keep_indices = noisify_covid_asymmetric(y_train, noise=noise_level,
-                                                                         random_state=random_seed)
+                                                                             random_state=random_seed)
+            else:
+                raise ValueError('Invalid dataset!')
             
+            # 保留可信样本的真实标签
+            if trust_ratio > 0:
+                noise_y_train[trust_mask] = y_train[trust_mask]
             trainset.update_corrupted_label(noise_y_train)
             noise_softlabel = torch.ones(ntrain, num_class) * eps / (num_class - 1)
             noise_softlabel.scatter_(1, torch.tensor(noise_y_train.reshape(-1, 1)), 1 - eps)
             trainset.update_corrupted_softlabel(noise_softlabel)
- 
+            trainset.update_trust_mask(trust_mask)  # 更新可信样本掩码
+
             print("apply asymmetric noise")
         print("clean data num:", len(keep_indices))
         print("probability transition matrix:\n{}".format(p))
@@ -342,10 +269,15 @@ def main(args):
         saver.write('probability transition matrix:\n{}\n'.format(p))
     saver.flush()
 
-    # -- set network, optimizer, scheduler, etc
+   # -- set network, optimizer, scheduler, etc
     if which_net == "cnn":
         net_trust = CNN9LAYER(input_channel=in_channel, n_outputs=num_class)
         net = CNN9LAYER(input_channel=in_channel, n_outputs=num_class)
+        net.apply(weight_init)
+        feature_size = 128
+    elif which_net == 'net':
+        net_trust = Net(n_channel=in_channel, n_classes=num_class)
+        net = Net(n_channel=in_channel, n_classes=num_class)
         net.apply(weight_init)
         feature_size = 128
     elif which_net == 'toynet':
@@ -376,6 +308,18 @@ def main(args):
         net_trust = PointNetCls(k=num_class)
         net = PointNetCls(k=num_class)
         feature_size = 256
+    elif which_net == 'robust':
+        net_trust = RobustNet(in_channels=in_channel, num_classes=num_class)
+        net = RobustNet(in_channels=in_channel, num_classes=num_class)
+        feature_size = 512*7*7
+    elif which_net == 'mixup_robust':
+        net_trust = MixupRobustNet(in_channels=in_channel, num_classes=num_class)
+        net = MixupRobustNet(in_channels=in_channel, num_classes=num_class)
+        feature_size = 512*7*7
+    elif which_net == 'ensemble_robust':
+        net_trust = EnsembleRobustNet(in_channels=in_channel, num_classes=num_class)
+        net = EnsembleRobustNet(in_channels=in_channel, num_classes=num_class)
+        feature_size = 512*7*7
     else:
         ValueError('Invalid network!')
 
@@ -403,6 +347,22 @@ def main(args):
     h = np.zeros([ntrain, num_class])
 
     criterion_1 = ANL_CE_Loss(alpha=5.0, beta=5.0, delta=5e-5)
+    criterion_2 = nn.NLLLoss()
+    
+    # 添加多个损失函数用于实验对比
+    criterion_3 = MAE_Loss(num_classes=num_class)  # 平均绝对误差
+    criterion_4 = MSE_Loss(num_classes=num_class)  # 均方误差
+    criterion_5 = GCE_Loss(num_classes=num_class, q=0.7)  # 广义交叉熵
+    criterion_6 = SCE_Loss(num_classes=num_class, alpha=0.1, beta=1.0)  # 对称交叉熵
+    criterion_7 = FL_Loss(gamma=2.0, alpha=None)  # Focal损失
+    criterion_8 = NCE_MAE_Loss(num_classes=num_class, alpha=1.0, beta=1.0)  # NCE+MAE组合
+    criterion_9 = NFL_RCE_Loss(num_classes=num_class, alpha=1.0, beta=1.0, gamma=2.0)  # NFL+RCE组合
+    criterion_10 = ANL_NCE_Loss(num_classes=num_class, alpha=5.0, beta=5.0, delta=5e-5)  # 主动负学习NCE
+    
+    # 可以通过修改这里来切换不同的损失函数进行实验
+    # 例如: current_criterion = criterion_3  # 使用MAE损失
+    current_criterion = criterion_1  # 默认使用ANL_CE_Loss
+
     pred_softlabels = np.zeros([ntrain, arg_every_n_epoch, num_class], dtype=float)
 
     train_acc_record = []
@@ -413,13 +373,18 @@ def main(args):
     #noise_ytrain = torch.tensor(noise_ytrain).to(device)
 
     cprint("================  Clean Label...  ================", "yellow")
+    
+    # 添加早停变量
+    perfect_recovery = 0.95
+    recovery_threshold = 3
+    perfect_num = 0  # 初始化计数器
+    
     for epoch in range(num_epoch):  
 
         train_correct = 0
         train_loss = 0
         train_total = 0
         delta = 0.8 + 0.02*max(epoch - arg_epoch_update + 1, 0)
-
         clean_train_correct = 0
         noise_train_correct = 0
 
@@ -436,7 +401,8 @@ def main(args):
             images, labels, softlabels = images.to(device), labels.to(device), softlabels.to(device)
             outputs, features = net_trust(images)
             log_outputs = torch.log_softmax(outputs, 1).float()
-
+            # 获取当前批次中可信样本的掩码
+            batch_trust_mask = torch.tensor([trust_mask[idx] for idx in indices]).to(device)
             # arg_epoch_start : epoch start to introduce loss retro
             # arg_epoch_interval : epochs between two updating of A
             if epoch >= arg_epoch_start - 1 and (epoch - (arg_epoch_start - 1)) % arg_epoch_interval == 0:
@@ -445,11 +411,40 @@ def main(args):
 
             if epoch >= arg_epoch_start: # use loss_retro + loss_ce
                 A_batch = A[indices].to(device)
-                loss = sum([-A_batch[i].matmul(softlabels[i].reshape(-1, 1).float()).t().matmul(log_outputs[i])
-                            for i in range(len(indices))]) / len(indices) + \
-                       criterion_1(outputs, features, labels)
+                unreliable_indices = ~batch_trust_mask
+                reliable_indices = batch_trust_mask
+                    
+                # 分别计算不可信样本和可信样本的损失
+                loss_unreliable = torch.tensor(0.0).to(device)
+                if unreliable_indices.sum() > 0:
+                    loss_unreliable = sum([-A_batch[i].matmul(softlabels[i].reshape(-1, 1).float()).t().matmul(log_outputs[i])
+                        for i in range(len(indices)) if not batch_trust_mask[i]]) / max(unreliable_indices.sum().item(), 1) + \
+                        criterion_1(outputs[unreliable_indices], features[unreliable_indices], labels[unreliable_indices])
+                    
+                    loss_reliable = torch.tensor(0.0).to(device)
+                    if reliable_indices.sum() > 0:
+                        loss_reliable = criterion_2(log_outputs[reliable_indices], labels[reliable_indices])
+                    
+                    # 根据可信/不可信样本数量比例加权合并损失
+                    weight_reliable = 2.0 * reliable_indices.sum().item() / len(indices)  # 给予可信样本2倍权重
+                    weight_unreliable = 1.0 - reliable_indices.sum().item() / len(indices)
+                    loss = weight_unreliable * loss_unreliable + weight_reliable * loss_reliable
             else: # use loss_ce
-                loss = criterion_1(outputs, features, labels)
+                    unreliable_indices = ~batch_trust_mask
+                    reliable_indices = batch_trust_mask
+                    
+                    loss_unreliable = torch.tensor(0.0).to(device)
+                    if unreliable_indices.sum() > 0:
+                        loss_unreliable = criterion_1(outputs[unreliable_indices], features[unreliable_indices], labels[unreliable_indices])
+                    
+                    loss_reliable = torch.tensor(0.0).to(device)
+                    if reliable_indices.sum() > 0:
+                        loss_reliable = criterion_2(log_outputs[reliable_indices], labels[reliable_indices])
+                    
+                    weight_reliable = 2.0 * reliable_indices.sum().item() / len(indices)  # 给予可信样本2倍权重
+                    weight_unreliable = 1.0 - reliable_indices.sum().item() / len(indices)
+                    loss = weight_unreliable * loss_unreliable + weight_reliable * loss_reliable
+
             
 
 
@@ -512,7 +507,7 @@ def main(args):
             trainset.update_corrupted_softlabel(clean_softlabels)
             trainset.update_corrupted_label(clean_softlabels.argmax(1))
 
-        # validation
+       # validation
         if not (epoch % 5):
             net_trust.eval()
 
@@ -523,14 +518,24 @@ def main(args):
             recovery_acc = np.sum(trainset.get_data_labels() == y_train) / ntrain
             recovery_record.append(recovery_acc)
 
-            cprint('>> best accuracy: {}\n>> best epoch: {}\n'.format(best_acc, best_epoch), 'green')
+            # 检查是否达到完美恢复率
+            if recovery_acc >= perfect_recovery:
+                perfect_num += 1
+            else:
+                perfect_num = 0
+
             cprint('>> final recovery rate: {}\n'.format(recovery_acc),
                    'green')
-            saver.write('>> best accuracy: {}\tbest epoch: {}\n\n'.format(best_acc, best_epoch))
             saver.write(
                 '>> final recovery rate: {}%\n'.format(np.sum(trainset.get_data_labels() == y_train) / ntrain * 100))
             saver.flush()
 
+            # 早停检查
+            if perfect_num >= recovery_threshold:
+                cprint(f'>> Early stopping: Perfect recovery rate achieved for {recovery_threshold} consecutive validations', 'red')
+                saver.write(f'>> Early stopping at epoch {epoch}: Perfect recovery rate achieved for {recovery_threshold} consecutive validations\n')
+                saver.flush()
+                break
 
 
 if __name__ == "__main__":
@@ -541,22 +546,24 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', default=0, help='delimited list input of GPUs', type=int)
-    parser.add_argument('--n_gpus', default=0, help="num of GPUS to use", type=int)
+    parser.add_argument('--n_gpus', default=1, help="num of GPUS to use", type=int)
     parser.add_argument("--dataset", default='covid', help='choose dataset', type=str)
     parser.add_argument('--network', default='toynet', help="network architecture", type=str)
-    parser.add_argument('--noise_type', default='pairflip', help='noisy type', type=str)
-    parser.add_argument('--noise_level', default=0.6, help='noisy level', type=float)
+    parser.add_argument('--noise_type', default='uniform', help='noisy type', type=str)
+    parser.add_argument('--noise_level', default=0.8, help='noisy level', type=float)
     parser.add_argument('--lr', default=1e-3, help="learning rate", type=float)
     parser.add_argument('--n_epochs', default=180, help="training epoch", type=int)
     parser.add_argument('--epoch_start', default=25, help='epoch start to introduce l_r', type=int)
     parser.add_argument('--epoch_update', default=15, help='epoch start to update labels', type=int)
     parser.add_argument('--epoch_interval', default=10, help="interval for updating A", type=int)
     parser.add_argument('--every_n_epoch', default=10, help='rolling window for estimating f(x)_t', type=int)
+    parser.add_argument('--two_stage', default=False, help='train NN again with clean data using original cross entropy', type=bool)
+    parser.add_argument('--trust_ratio', default=0.03, help='ratio of trusted samples with clean labels', type=float)
     parser.add_argument('--seed', default=123, help='set random seed', type=int)
     args = parser.parse_args()
 
     opt_gpus = [i for i in range(args.gpu, (args.gpu + args.n_gpus))]
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(x) for x in opt_gpus)
 
-    main(args)
+    test_temp = main(args)
 
