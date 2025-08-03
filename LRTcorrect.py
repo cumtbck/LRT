@@ -26,8 +26,7 @@ from data.loss import (
 import torch.optim as optim
 from torch.optim import lr_scheduler
 import torchvision.transforms as transforms
-from Utils.noise import noisify_with_P, noisify_cifar10_asymmetric, \
-    noisify_cifar100_asymmetric, noisify_mnist_asymmetric, noisify_pairflip, noisify_modelnet40_asymmetric,noisify_covid_asymmetric
+from Utils.noise import noisify_with_P,noisify_covid_asymmetric
 import numpy as np
 import copy
 from tqdm import tqdm
