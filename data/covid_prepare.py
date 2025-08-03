@@ -6,7 +6,7 @@ import numpy as np
 
 class COVID19(data.Dataset):
     """COVID-19 Chest X-ray Dataset"""
-    classes = ['Covid', 'Lung_opacity', 'Normal', 'Viral_pneumonia']
+    classes = ['COVID', 'Lung_Opacity', 'Normal', 'Viral Pneumonia']
     class_to_idx = {cls: i for i, cls in enumerate(classes)}
 
     def __init__(self, root, split='train', train_ratio=0.8, transform=None):

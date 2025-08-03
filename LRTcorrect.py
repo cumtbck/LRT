@@ -7,13 +7,9 @@ import argparse
 from network.net import weight_init, CNN9LAYER
 from network.resnet import resnet18, resnet34
 from network.preact_resnet import preact_resnet18, preact_resnet34, preact_resnet101, initialize_weights, conv_init
-from network.pointnet import PointNetCls
 from network.toynet import ToyNet
 from network.net import Net
 from network.robust_net import RobustNet, MixupRobustNet, EnsembleRobustNet
-from data.cifar_prepare import CIFAR10, CIFAR100
-from data.mnist_prepare import MNIST
-from data.pc_prepare import ModelNet40
 from data.covid_prepare import COVID19
 from data.utils import ANL_CE_Loss
 from data.loss import (
@@ -26,8 +22,7 @@ from data.loss import (
 import torch.optim as optim
 from torch.optim import lr_scheduler
 import torchvision.transforms as transforms
-from Utils.noise import noisify_with_P, noisify_cifar10_asymmetric, \
-    noisify_cifar100_asymmetric, noisify_mnist_asymmetric, noisify_pairflip, noisify_modelnet40_asymmetric,noisify_covid_asymmetric
+from Utils.noise import noisify_with_P, noisify_pairflip, noisify_covid_asymmetric
 import numpy as np
 import copy
 from tqdm import tqdm
