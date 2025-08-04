@@ -108,377 +108,48 @@ def learning_rate(init, epoch):
     return init*math.pow(0.5, optim_factor)
 
 def main(args):
-
-    random_seed = int(np.random.choice(range(1000), 1))
+    # 使用类特定的LRT系统替代原有的整体数据集处理方法
+    from ClassLRTcorrect import MultiClassLRTSystem
+    
+    # 设置随机种子
+    random_seed = args.seed
     np.random.seed(random_seed)
     random.seed(random_seed)
     torch.manual_seed(random_seed)
     torch.cuda.manual_seed(random_seed)
     torch.cuda.manual_seed_all(random_seed)
     torch.backends.cudnn.deterministic = True
-
-    arg_which_net = args.network
-    arg_dataset = args.dataset
-    arg_epoch_start = args.epoch_start
-    lr = args.lr
-    arg_gpu = args.gpu
-    arg_num_gpu = args.n_gpus
-    arg_every_n_epoch = args.every_n_epoch   # interval to perform the correction
-    arg_epoch_update = args.epoch_update     # the epoch to start correction (warm-up period)
-    arg_epoch_interval = args.epoch_interval # interval between two update of A
-    noise_level = args.noise_level
-    noise_type = args.noise_type             # "uniform", "asymmetric", "none"
-    train_val_ratio = 1.0
-    which_net = arg_which_net                # "cnn" "resnet18" "resnet34" "preact_resnet18" "preact_resnet34" "preact_resnet101" "pc"
-    num_epoch = args.n_epochs                # Total training epochs
     
-
     print('Using {}\nTest on {}\nRandom Seed {}\nevery n epoch {}\nStart at epoch {}'.
-          format(arg_which_net, arg_dataset, random_seed, arg_every_n_epoch, arg_epoch_start))
-
-    # -- training parameters
-    batch_size = 64
-    num_workers = 1
-
-    #gamma = 0.5
-
-    # -- specify dataset
-    # data augmentation
-    if arg_dataset == 'covid':
-        transform_train = transforms.Compose([
-                transforms.Resize((224,224)), 
-                #transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                transforms.Normalize((0.5094,),(0.2532,)),
-            ])
+          format(args.network, args.dataset, random_seed, args.every_n_epoch, args.epoch_start))
     
-    else:
-        transform_train = None
+    # 创建并运行多类别LRT系统，处理四个子类别数据集
+    cprint("================  Starting Class-Specific LRT Correction  ================", "yellow")
     
-    if arg_dataset == 'covid':
+    # 创建多类别LRT系统
+    lrt_system = MultiClassLRTSystem(args)
     
-        trainset = COVID19(root='./data', split='train', train_ratio=train_val_ratio, transform=transform_train)
-        trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_workers,worker_init_fn=_init_fn)
+    # 运行系统，对每个类别分别进行标签修复，然后合并结果
+    overall_rate, class_rates, combined_dataset = lrt_system.run()
     
-        num_class = 4
-        in_channel = 1
-        
+    cprint(f"================  Completed with Overall Recovery Rate: {overall_rate:.4f}  ================", "green")
     
-    print('train data size:', len(trainset))
-
-    eps = 1e-6               # This is the epsilon used to soft the label (not the epsilon in the paper)
-    ntrain = len(trainset)
-
-    # -- generate noise --
-    # y_train is ground truth labels, we should not have any access to  this after the noisy labels are generated
-    # algorithm after y_tilde is generated has nothing to do with y_train
-    y_train = trainset.get_data_labels()
-    y_train = np.array(y_train)
-
-    noise_y_train = None
-    keep_indices = None
-    p = None
-
-
- 
-
-    if(noise_type == 'none'):
-            pass
-    else:
-        if noise_type == "uniform":
-            noise_y_train, p, keep_indices = noisify_with_P(y_train, nb_classes=num_class, noise=noise_level, random_state=random_seed)
-            trainset.update_corrupted_label(noise_y_train)
-            noise_softlabel = torch.ones(ntrain, num_class)*eps/(num_class-1)
-            noise_softlabel.scatter_(1, torch.tensor(noise_y_train.reshape(-1, 1)), 1-eps)
-            trainset.update_corrupted_softlabel(noise_softlabel)
-            
-            print("apply uniform noise")
-
-        elif noise_type == "pairflip":
-            noise_y_train, p, keep_indices = noisify_pairflip(y_train, nb_classes=num_class, noise=noise_level, random_state=random_seed)
-            trainset.update_corrupted_label(noise_y_train)
-            noise_softlabel = torch.ones(ntrain, num_class)*eps/(num_class-1)
-            noise_softlabel.scatter_(1, torch.tensor(noise_y_train.reshape(-1, 1)), 1-eps)
-            trainset.update_corrupted_softlabel(noise_softlabel)
-            
-            print("apply pairflip noise")
-        
-        else:
-            if arg_dataset == 'covid':
-                noise_y_train, p, keep_indices = noisify_covid_asymmetric(y_train, noise=noise_level,
-                                                                         random_state=random_seed)
-            
-            trainset.update_corrupted_label(noise_y_train)
-            noise_softlabel = torch.ones(ntrain, num_class) * eps / (num_class - 1)
-            noise_softlabel.scatter_(1, torch.tensor(noise_y_train.reshape(-1, 1)), 1 - eps)
-            trainset.update_corrupted_softlabel(noise_softlabel)
- 
-            print("apply asymmetric noise")
-        print("clean data num:", len(keep_indices))
-        print("probability transition matrix:\n{}".format(p))
-
-
-    # -- create log file
-    file_name = '[' + arg_dataset + '_' + which_net + ']' \
-                + 'type:' + noise_type + '_' + 'noise:' + str(noise_level) + '_' \
-                + '_' + 'start:' + str(arg_epoch_start) + '_' \
-                + 'every:' + str(arg_every_n_epoch) + '_'\
-                + 'time:' + str(datetime.datetime.now()) + '.txt'
-    log_dir = check_folder('new_logs/logs_txt_' + str(random_seed))
-    file_name = os.path.join(log_dir, file_name)
-    saver = open(file_name, "w")
-
-    saver.write('noise type: {}\nnoise level: {}\nwhen_to_apply_epoch: {}\n'.format(
-        noise_type, noise_level, arg_epoch_start))
-
-    if noise_type != 'none':
-        saver.write('total clean data num: {}\n'.format(len(keep_indices)))
-        saver.write('probability transition matrix:\n{}\n'.format(p))
-    saver.flush()
-
-    # -- set network, optimizer, scheduler, etc
-    if which_net == "cnn":
-        net_trust = CNN9LAYER(input_channel=in_channel, n_outputs=num_class)
-        net = CNN9LAYER(input_channel=in_channel, n_outputs=num_class)
-        net.apply(weight_init)
-        feature_size = 128
-    elif which_net == 'net':
-        net_trust = Net(n_channel=in_channel, n_classes=num_class)
-        net = Net(n_channel=in_channel, n_classes=num_class)
-        net.apply(weight_init)
-        feature_size = 128
-    elif which_net == 'toynet':
-        net_trust = ToyNet(in_channels=in_channel, num_classes=num_class)
-        net = ToyNet(in_channels=in_channel, num_classes=num_class)
-        feature_size = 128
-    elif which_net == 'resnet18':
-        net_trust = resnet18(in_channel=in_channel, num_classes=num_class)
-        net = resnet18(in_channel=in_channel, num_classes=num_class)
-        feature_size = 512
-    elif which_net == 'resnet34':
-        net_trust = resnet34(in_channel=in_channel, num_classes=num_class)
-        net = resnet34(in_channel=in_channel, num_classes=num_class)
-        feature_size = 512
-    elif which_net == 'preact_resnet18':
-        net_trust = preact_resnet18(num_classes=num_class, num_input_channels=in_channel)
-        net = preact_resnet18(num_classes=num_class, num_input_channels=in_channel)
-        feature_size = 256
-    elif which_net == 'preact_resnet34':
-        net_trust = preact_resnet34(num_classes=num_class, num_input_channels=in_channel)
-        net = preact_resnet34(num_classes=num_class, num_input_channels=in_channel)
-        feature_size = 256
-    elif which_net == 'preact_resnet101':
-        net_trust = preact_resnet101()
-        net = preact_resnet101()
-        feature_size = 256
-    elif which_net == 'robust':
-        net_trust = RobustNet(in_channels=in_channel, num_classes=num_class)
-        net = RobustNet(in_channels=in_channel, num_classes=num_class)
-        feature_size = 512*7*7
-    elif which_net == 'mixup_robust':
-        net_trust = MixupRobustNet(in_channels=in_channel, num_classes=num_class)
-        net = MixupRobustNet(in_channels=in_channel, num_classes=num_class)
-        feature_size = 512*7*7
-    elif which_net == 'ensemble_robust':
-        net_trust = EnsembleRobustNet(in_channels=in_channel, num_classes=num_class)
-        net = EnsembleRobustNet(in_channels=in_channel, num_classes=num_class)
-        feature_size = 512*7*7
-    else:
-        ValueError('Invalid network!')
-
-    opt_gpus = [i for i in range(arg_gpu, arg_gpu+int(arg_num_gpu))]
-    if len(opt_gpus) > 1:
-        print("Using ", len(opt_gpus), " GPUs")
-        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(x) for x in opt_gpus)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "mps")
-    print(device)
-
-    if len(opt_gpus) > 1:
-        net_trust = torch.nn.DataParallel(net_trust)
-        net = torch.nn.DataParallel(net)
-    net_trust.to(device)
-    net.to(device)
-    # net.apply(conv_init)
-
-    
-    #初始化A
-    A = 1/num_class*torch.ones(ntrain, num_class, num_class, requires_grad=False).float().to(device)
-    h = np.zeros([ntrain, num_class])
-
-    criterion_1 = ANL_CE_Loss(alpha=5.0, beta=5.0, delta=5e-5)
-    criterion_2 = nn.NLLLoss()
-    
-    # 添加多个损失函数用于实验对比
-    criterion_3 = MAE_Loss(num_classes=num_class)  # 平均绝对误差
-    criterion_4 = MSE_Loss(num_classes=num_class)  # 均方误差
-    criterion_5 = GCE_Loss(num_classes=num_class, q=0.7)  # 广义交叉熵
-    criterion_6 = SCE_Loss(num_classes=num_class, alpha=0.1, beta=1.0)  # 对称交叉熵
-    criterion_7 = FL_Loss(gamma=2, alpha=None)  # Focal损失
-    criterion_8 = NCE_MAE_Loss(num_classes=num_class, alpha=1.0, beta=1.0)  # NCE+MAE组合
-    criterion_9 = NFL_RCE_Loss(num_classes=num_class, alpha=1.0, beta=1.0, gamma=2)  # NFL+RCE组合
-    criterion_10 = ANL_NCE_Loss(num_classes=num_class, alpha=5.0, beta=5.0, delta=5e-5)  # 主动负学习NCE
-    
-    current_criterion = criterion_1  # 默认使用ANL_CE_Loss
-
-    pred_softlabels = np.zeros([ntrain, arg_every_n_epoch, num_class], dtype=float)
-
-    train_acc_record = []
-    clean_train_acc_record = []
-    noise_train_acc_record = []
-    recovery_record = []
-    noise_ytrain = copy.copy(noise_y_train)
-    #noise_ytrain = torch.tensor(noise_ytrain).to(device)
-
-    cprint("================  Clean Label...  ================", "yellow")
-    
-    # 添加早停变量
-    perfect_recovery = 0.95
-    recovery_threshold = 3
-    perfect_num = 0  # 初始化计数器
-    
-    for epoch in range(num_epoch):  
-
-        train_correct = 0
-        train_loss = 0
-        train_total = 0
-        delta = 0.8 + 0.02*max(epoch - arg_epoch_update + 1, 0)
-
-        clean_train_correct = 0
-        noise_train_correct = 0
-
-        optimizer_trust = optim.SGD(net_trust.parameters(), lr=learning_rate(lr, epoch), weight_decay=5e-4,
-                                    nesterov=True, momentum=0.9)
-
-        net_trust.train()
-
-        # Train with noisy data
-        for i, (images, labels, softlabels, indices) in enumerate(tqdm(trainloader, ncols=100, ascii=True)):
-            if images.size(0) == 1:  # when batch size equals 1, skip, due to batch normalization
-                continue
-
-            images, labels, softlabels = images.to(device), labels.to(device), softlabels.to(device)
-            outputs, features = net_trust(images)
-            log_outputs = torch.log_softmax(outputs, 1).float()
-
-            # arg_epoch_start : epoch start to introduce loss retro
-            # arg_epoch_interval : epochs between two updating of A
-            if epoch >= arg_epoch_start - 1 and (epoch - (arg_epoch_start - 1)) % arg_epoch_interval == 0:
-                h[indices] = log_outputs.detach().cpu()
-            normal_outputs = torch.softmax(outputs, 1)
-
-            if epoch >= arg_epoch_start: # use loss_retro + loss_ce
-                A_batch = A[indices].to(device)
-                loss = sum([-A_batch[i].matmul(softlabels[i].reshape(-1, 1).float()).t().matmul(log_outputs[i])
-                            for i in range(len(indices))]) / len(indices) + \
-                       criterion_2(log_outputs, labels)
-            else: # use loss_ce
-                # 使用当前选择的损失函数
-                loss = current_criterion(outputs, features, labels)
-            
-
-
-
-            optimizer_trust.zero_grad()
-            loss.backward()
-            optimizer_trust.step()
-
-            #arg_every_n_epoch : rolling windows to get eta_tilde
-            if epoch >= (arg_epoch_update - arg_every_n_epoch):
-                pred_softlabels[indices, epoch % arg_every_n_epoch, :] = normal_outputs.detach().cpu().numpy()
-
-            train_loss += loss.item()
-            train_total += images.size(0)
-            _, predicted = outputs.max(1)
-            train_correct += predicted.eq(labels).sum().item()
-
-            # For monitoring purpose, comment the following line out if you have your own dataset that doesn't have ground truth label
-            train_label_clean = torch.tensor(y_train)[indices].to(device)
-            train_label_noise = torch.tensor(noise_ytrain[indices]).to(device)  # type: ignore
-            clean_train_correct += predicted.eq(train_label_clean).sum().item()
-            noise_train_correct += predicted.eq(train_label_noise).sum().item() # acc wrt the original noisy labels
-
-        train_acc = train_correct / train_total * 100
-        clean_train_acc = clean_train_correct/train_total*100
-        noise_train_acc = noise_train_correct/train_total*100
-        print(" Train Epoch: [{}/{}] \t Training Acc wrt Corrected {:.3f} \t Train Acc wrt True {:.3f} \t Train Acc wrt Noise {:.3f}".
-              format(epoch, num_epoch, train_acc, clean_train_acc, noise_train_acc))
-
-        # updating A
-        if epoch >= arg_epoch_start - 1 and (epoch - (arg_epoch_start - 1)) % arg_epoch_interval == 0:
-            cprint("+++++++++++++++++ Updating A +++++++++++++++++++", "magenta")
-            unsolved = 0
-            infeasible = 0
-            y_soft = trainset.get_data_softlabel()
-
-            with torch.no_grad():
-                for i in tqdm(range(ntrain), ncols=100, ascii=True):
-                    try:
-                        result, A_opt = updateA(y_soft[i], h[i], rho=0.9)
-                    except:
-                        A[i] = A[i]
-                        unsolved += 1
-                        continue
-
-                    if (result == np.inf):
-                        A[i] = A[i]
-                        infeasible += 1
-                    else:
-                        A[i] = torch.tensor(A_opt)
-
-        # applying improved LRT scheme
-        # args_epoch_update : epoch to update labels
-        if epoch >= arg_epoch_update:
-            y_tilde = trainset.get_data_labels()
-            pred_softlabels_bar = pred_softlabels.mean(1)
-            clean_labels, clean_softlabels = lrt_flip_scheme(pred_softlabels_bar, y_tilde, delta)
-            trainset.update_corrupted_softlabel(clean_softlabels)
-            trainset.update_corrupted_label(clean_labels)
-
-        # validation
-        if not (epoch % 5):
-            net_trust.eval()
-
-            train_acc_record.append(train_acc)
-            clean_train_acc_record.append(clean_train_acc)
-            noise_train_acc_record.append(noise_train_acc)
-
-            recovery_acc = np.sum(trainset.get_data_labels() == y_train) / ntrain
-            recovery_record.append(recovery_acc)
-
-            # 检查是否达到完美恢复率
-            if recovery_acc >= perfect_recovery:
-                perfect_num += 1
-            else:
-                perfect_num = 0
-
-            cprint('>> final recovery rate: {}\n'.format(recovery_acc),
-                   'green')
-            saver.write(
-                '>> final recovery rate: {}%\n'.format(np.sum(trainset.get_data_labels() == y_train) / ntrain * 100))
-            saver.flush()
-
-            # 早停检查
-            if perfect_num >= recovery_threshold:
-                cprint(f'>> Early stopping: Perfect recovery rate achieved for {recovery_threshold} consecutive validations', 'red')
-                saver.write(f'>> Early stopping at epoch {epoch}: Perfect recovery rate achieved for {recovery_threshold} consecutive validations\n')
-                saver.flush()
-                break
+    return overall_rate
 
 
 
 if __name__ == "__main__":
-
     '''
-    will return test accuracy
+    将调用分类标签修复系统执行标签修复
     ''' 
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', default=0, help='delimited list input of GPUs', type=int)
     parser.add_argument('--n_gpus', default=0, help="num of GPUS to use", type=int)
     parser.add_argument("--dataset", default='covid', help='choose dataset', type=str)
-    parser.add_argument('--network', default='robust', help="network architecture", type=str)
-    parser.add_argument('--noise_type', default='pairflip', help='noisy type', type=str)
-    parser.add_argument('--noise_level', default=0.8, help='noisy level', type=float)
+    parser.add_argument('--network', default='resnet18', help="network architecture", type=str)
+    parser.add_argument('--noise_type', default='uniform', help='noisy type', type=str)
+    parser.add_argument('--noise_level', default=0.2, help='noisy level', type=float)
     parser.add_argument('--lr', default=1e-3, help="learning rate", type=float)
     parser.add_argument('--n_epochs', default=180, help="training epoch", type=int)
     parser.add_argument('--epoch_start', default=25, help='epoch start to introduce l_r', type=int)
@@ -488,8 +159,10 @@ if __name__ == "__main__":
     parser.add_argument('--seed', default=123, help='set random seed', type=int)
     args = parser.parse_args()
 
+    # 设置GPU
     opt_gpus = [i for i in range(args.gpu, (args.gpu + args.n_gpus))]
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(x) for x in opt_gpus)
 
+    # 调用修改后的多类标签修复系统
     main(args)
 
