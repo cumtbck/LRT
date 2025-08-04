@@ -299,10 +299,6 @@ def main(args):
         net_trust = preact_resnet101()
         net = preact_resnet101()
         feature_size = 256
-    elif which_net == 'pc':
-        net_trust = PointNetCls(k=num_class)
-        net = PointNetCls(k=num_class)
-        feature_size = 256
     elif which_net == 'robust':
         net_trust = RobustNet(in_channels=in_channel, num_classes=num_class)
         net = RobustNet(in_channels=in_channel, num_classes=num_class)
@@ -332,11 +328,6 @@ def main(args):
     net.to(device)
     # net.apply(conv_init)
 
-    best_acc = 0
-    best_epoch = 0
-    patience = 50
-    no_improve_counter = 0
-    
     #初始化A
     A = 1/num_class*torch.ones(ntrain, num_class, num_class, requires_grad=False).float().to(device)
     h = np.zeros([ntrain, num_class])
@@ -349,9 +340,9 @@ def main(args):
     criterion_4 = MSE_Loss(num_classes=num_class)  # 均方误差
     criterion_5 = GCE_Loss(num_classes=num_class, q=0.7)  # 广义交叉熵
     criterion_6 = SCE_Loss(num_classes=num_class, alpha=0.1, beta=1.0)  # 对称交叉熵
-    criterion_7 = FL_Loss(gamma=2.0, alpha=None)  # Focal损失
+    criterion_7 = FL_Loss(gamma=2, alpha=None)  # Focal损失
     criterion_8 = NCE_MAE_Loss(num_classes=num_class, alpha=1.0, beta=1.0)  # NCE+MAE组合
-    criterion_9 = NFL_RCE_Loss(num_classes=num_class, alpha=1.0, beta=1.0, gamma=2.0)  # NFL+RCE组合
+    criterion_9 = NFL_RCE_Loss(num_classes=num_class, alpha=1.0, beta=1.0, gamma=2)  # NFL+RCE组合
     criterion_10 = ANL_NCE_Loss(num_classes=num_class, alpha=5.0, beta=5.0, delta=5e-5)  # 主动负学习NCE
     
     # 可以通过修改这里来切换不同的损失函数进行实验
