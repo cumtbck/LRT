@@ -148,6 +148,9 @@ class ClassSpecificLRTCorrector:
         self.num_class = 4  # 总类别数保持不变
         self.in_channel = 1
         
+        # 设置数据集大小
+        self.ntrain = len(self.trainset)
+        
         # 准备噪声标签
         self.prepare_noisy_labels()
         
@@ -161,7 +164,6 @@ class ClassSpecificLRTCorrector:
         self.recovery_record = []
         
         # 预测软标签
-        self.ntrain = len(self.trainset)
         self.pred_softlabels = np.zeros([self.ntrain, args.every_n_epoch, self.num_class], dtype=float)
         
         # 矩阵A初始化
@@ -190,6 +192,13 @@ class ClassSpecificLRTCorrector:
             self.noise_y_train = self.y_train
             self.p = np.eye(self.num_class)
             self.keep_indices = np.arange(len(self.y_train))
+            
+            # 为无噪声情况创建软标签
+            eps = 1e-2
+            n_samples = len(self.y_train)
+            noise_softlabel = torch.ones(n_samples, self.num_class)*eps/(self.num_class-1)
+            noise_softlabel.scatter_(1, torch.tensor(self.noise_y_train.reshape(-1, 1)), 1-eps)
+            self.trainset.update_corrupted_softlabel(noise_softlabel)
         else:
             if noise_type == "uniform":
                 self.noise_y_train, self.p, self.keep_indices = noisify_with_P(
@@ -216,7 +225,8 @@ class ClassSpecificLRTCorrector:
             
             # 创建软标签
             eps = 1e-2
-            noise_softlabel = torch.ones(self.ntrain, self.num_class)*eps/(self.num_class-1)
+            n_samples = len(self.y_train)
+            noise_softlabel = torch.ones(n_samples, self.num_class)*eps/(self.num_class-1)
             noise_softlabel.scatter_(1, torch.tensor(self.noise_y_train.reshape(-1, 1)), 1-eps)
             self.trainset.update_corrupted_softlabel(noise_softlabel)
             
@@ -471,13 +481,11 @@ class MultiClassLRTSystem:
         
     def setup_device(self):
         """设置设备"""
-        self.opt_gpus = [i for i in range(self.args.gpu, self.args.gpu + int(self.args.n_gpus))]
-        if len(self.opt_gpus) > 1:
-            print("Using ", len(self.opt_gpus), " GPUs")
-            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(x) for x in self.opt_gpus)
+        if self.args.n_gpus > 1:
+            print("Using ",self.args.n_gpus, " GPUs")
+            os.environ["CUDA_VISIBLE_DEVICES"] = self.args.gpu
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "mps")
         print(self.device)
-        self.args.opt_gpus = self.opt_gpus
         
     def create_log_file(self):
         """创建日志文件"""
@@ -543,8 +551,8 @@ class MultiClassLRTSystem:
         
         # 获取整体标签修复率
         y_train_all = []
-        for dataset in fixed_datasets:
-            y_train_all.extend(dataset.y_train)
+        for i, dataset in enumerate(fixed_datasets):
+            y_train_all.extend(correctors[i].y_train)
         y_train_all = np.array(y_train_all)
         
         y_fixed_all = combined_dataset.get_data_labels()
